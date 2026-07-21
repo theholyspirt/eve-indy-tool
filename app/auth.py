@@ -17,6 +17,16 @@ EVE_SSO_TOKEN_URL = "https://login.eveonline.com/v2/oauth/token"
 SSO_HEADERS = {"User-Agent": os.getenv("ESI_USER_AGENT", "eve-indy-toolbox/1.0 (personal industry tool)")}
 
 
+class TokenRefreshError(Exception):
+    """EVE SSO rejected the refresh token outright — revoked, expired, or the
+    app credentials changed. Non-retryable: that character has to log in again.
+
+    Deliberately distinct from transient failures (network errors, SSO 5xx,
+    malformed JSON, DB errors), which keep their own exception types so callers
+    can tell "this session is dead" apart from "ESI is having a moment".
+    """
+
+
 @auth.route("/login")
 def login():
     # Random per-login value, checked again in /callback, so a forged callback
@@ -190,13 +200,26 @@ def refresh_access_token(character):
         auth=(os.getenv("EVE_CLIENT_ID"), os.getenv("EVE_CLIENT_SECRET")),
         headers=SSO_HEADERS,
     )
-    # A revoked/expired refresh token (e.g. the user changed their EVE password)
-    # comes back as a 4xx with no access_token — surface it as a clean error the
-    # callers already handle, instead of a bare KeyError on token["access_token"].
-    if not response.ok:
-        raise RuntimeError(
-            f"token refresh failed for {character.character_id}: HTTP {response.status_code}"
-        )
+    # Only OAuth2 "invalid_grant" (RFC 6749 §5.2) means the refresh token itself
+    # is dead — revoked, expired, or invalidated by a password change. That is
+    # terminal for this character: they have to log in again.
+    if 400 <= response.status_code < 500:
+        try:
+            oauth_error = response.json().get("error")
+        except ValueError:
+            oauth_error = None
+        if oauth_error == "invalid_grant":
+            raise TokenRefreshError(
+                f"EVE SSO rejected the refresh token for character "
+                f"{character.character_id} (HTTP {response.status_code}, invalid_grant)"
+            )
+    # Every other status is the app's problem, not this character's: 401
+    # invalid_client means OUR client credentials are wrong (logging the user out
+    # would hide a config error and drop every character), 429 means we're rate
+    # limited, 5xx means SSO is struggling. raise_for_status() surfaces them as a
+    # normal requests.HTTPError, which keeps the response — and any Retry-After
+    # header — attached for callers to inspect.
+    response.raise_for_status()
     token = response.json()
     character.access_token = token["access_token"]
     # EVE SSO can rotate the refresh token; persist the new one when it does,

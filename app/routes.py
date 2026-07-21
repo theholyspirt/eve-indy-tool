@@ -19,7 +19,7 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
-from app.auth import refresh_access_token
+from app.auth import refresh_access_token, TokenRefreshError
 from datetime import datetime, timezone, timedelta
 
 # CCP requires a descriptive User-Agent on ESI calls; unidentified clients
@@ -303,11 +303,14 @@ def get_character():
         session.clear()
         return None
     if character.token_expiry.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
-        # If the primary character's refresh token is dead (revoked, password
-        # change), treat them as logged out rather than 500ing every page.
+        # A rejected refresh token is permanent — this session can never work
+        # again, so log them out rather than 500ing every page. Transient
+        # failures (SSO/network down, bad JSON, DB errors) deliberately
+        # propagate: silently logging someone out would hide the real fault
+        # and look like the app randomly forgetting them.
         try:
             character = refresh_access_token(character)
-        except Exception:
+        except TokenRefreshError:
             session.clear()
             return None
     return character
