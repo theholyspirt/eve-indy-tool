@@ -1,6 +1,11 @@
 # EVE Industry Toolbox
 
-A personal Flask web app for tracking EVE Online industry — manufacturing jobs, blueprints, inventory, transactions, and profit.
+A Flask web app for tracking EVE Online industry — manufacturing jobs, blueprints, inventory, transactions, and profit.
+
+Runs in two modes:
+
+- **Standalone** (default) — single user on your own machine, with its own EVE SSO login. Zero extra setup.
+- **Corp module** — bolts onto an existing corp website that owns user accounts and ranks. Hundreds of members, each seeing **only their own characters and finances**; admin ranks (directors / HR / CEO) see corp-wide data. See [Corp website integration](#corp-website-integration).
 
 ---
 
@@ -118,6 +123,39 @@ eve_indy/
         ├── calculator.html
         └── transactions.html
 ```
+
+---
+
+## Corp website integration
+
+The tool is designed to bolt onto a corp website that already owns users, login, and ranks. It never creates its own accounts — it **mirrors** the host site's identity.
+
+**Everything the host site must provide lives in one file: [`app/integration.py`](app/integration.py).** Open it; each function marked `IMPLEMENT ME` is documented with a worked example. In short:
+
+1. **`resolve_current_identity()`** *(required)* — read your session cookie, validate it against your session store, and return `{"external_id": "<your users.id>", "role": "<their rank>"}` — or `None` if signed out.
+2. **`login_url()` / `logout_url()`** — where your login and logout live (or set `CORP_LOGIN_URL` / `CORP_LOGOUT_URL`).
+3. Set `INTEGRATION_MODE=corp` and list which of **your** rank names get corp-wide visibility in `ADMIN_ROLES` (e.g. `admin,director,hr,ceo`). Everything else is a regular member. Matching is exact — unknown ranks never inherit admin.
+
+**Fail-safe:** until `resolve_current_identity()` is implemented (or if it breaks), the app shows **nothing** — every query is scoped by the resolved user, and an unresolved user owns no data. Blank pages mean the integration isn't wired yet; they never mean a leak.
+
+**EVE SSO stays**, but as a one-time "link your character" step per alt, not a login — wallet/asset data only comes from ESI with a token that character granted. Linked characters attach to the signed-in user; a character already linked by someone else cannot be claimed.
+
+### Data isolation
+
+- Members see only their own linked characters, transactions, and totals; admins see corp-wide. Enforced at the query level through one deny-by-default chokepoint (`owned_characters()` in `app/routes.py`) — never by hiding rows in templates.
+- Probing another member's data (e.g. hand-editing `?character=`) returns a 403 page and writes an audit row; admins review attempts at `/admin/access-log`.
+- Verified by the cross-user tests in `tests/test_isolation.py`, including mutation testing (deliberately removing a filter makes the suite fail).
+
+### Production checklist
+
+- `TOKEN_ENCRYPTION_KEY` set — EVE OAuth tokens encrypted at rest (a leaked DB file is useless without the key; keep the key out of DB backups)
+- `SESSION_COOKIE_SECURE=true` behind HTTPS
+- `ALLOWED_CORP_IDS` set — only corp members can link characters (fails closed if ESI can't verify)
+- `DATABASE_URL` pointing at PostgreSQL — SQLite does not survive hundreds of concurrent users
+- `FLASK_DEBUG` unset, app reachable **only** through the host site / reverse proxy
+- `RUN_SCHEDULER=false` on all but one worker
+
+All of these are documented in [`.env.example`](.env.example).
 
 ---
 

@@ -152,15 +152,50 @@ def callback():
 
     expiry = datetime.now(timezone.utc) + timedelta(seconds=tokens["expires_in"])
 
+    # Deferred import: routes imports this module, so importing it at module
+    # level would be circular.
+    from app.routes import get_current_user
+
+    # Whoever is signed in on the host site becomes the owner of this character.
+    # Without an owner the character would belong to nobody and be invisible to
+    # everyone, so refuse the link rather than orphan it.
+    user = get_current_user()
+    if user is None:
+        return ("You must be signed in to link an EVE character.", 403)
+
+    # CORP GATE: only characters in the corp/alliance may be linked. Without
+    # this, anyone who can reach the URL could attach an outside character and
+    # use the tool's ESI quota. ALLOWED_CORP_IDS unset = gate off (local dev).
+    allowed = {c.strip() for c in os.getenv("ALLOWED_CORP_IDS", "").split(",") if c.strip()}
+    if allowed:
+        public = requests.get(
+            f"https://esi.evetech.net/latest/characters/{character_info['CharacterID']}/",
+            headers=SSO_HEADERS, timeout=30,
+        )
+        if not public.ok:
+            # Fail CLOSED: if membership can't be verified, don't link. An ESI
+            # blip means "try again in a minute", not "let anyone in".
+            return ("Could not verify corp membership with ESI — try again shortly.", 502)
+        corp_id = str(public.json().get("corporation_id", ""))
+        if corp_id not in allowed:
+            return ("That character is not in the corporation.", 403)
+
     # Re-login for an already-known character just refreshes their tokens in place.
     character = Character.query.filter_by(
         character_id=character_info["CharacterID"]
     ).first()
 
     if character:
+        # An EVE character belongs to exactly one account. If it is already
+        # linked by somebody else, refuse — otherwise anyone who can complete
+        # SSO for a character could seize another member's alt, taking its
+        # wallet and asset history with it.
+        if character.user_id is not None and character.user_id != user.id:
+            return ("That character is already linked to another account.", 403)
         character.access_token = tokens["access_token"]
         character.refresh_token = tokens["refresh_token"]
         character.token_expiry = expiry
+        character.user_id = user.id
     else:
         character = Character(
             character_id=character_info["CharacterID"],
@@ -168,6 +203,7 @@ def callback():
             access_token=tokens["access_token"],
             refresh_token=tokens["refresh_token"],
             token_expiry=expiry,
+            user_id=user.id,
         )
         db.session.add(character)
 
@@ -184,7 +220,14 @@ def callback():
 
 @auth.route("/logout")
 def logout():
+    # CORP SITE INTEGRATION: in corp mode this app does not own the session, so
+    # it clears only its own local state and hands off to the host site's
+    # logout. Configure that URL via CORP_LOGOUT_URL (see app/integration.py).
+    from app import integration
+
     session.clear()
+    if integration.integration_mode() == "corp":
+        return redirect(integration.logout_url())
     return redirect(url_for("main.index"))
 
 
@@ -205,9 +248,14 @@ def refresh_access_token(character):
     # terminal for this character: they have to log in again.
     if 400 <= response.status_code < 500:
         try:
-            oauth_error = response.json().get("error")
+            payload = response.json()
         except ValueError:
-            oauth_error = None
+            payload = None
+        # The body is not guaranteed to be a JSON *object*. A proxy or CDN in
+        # front of SSO can return a bare string or array, which parses fine but
+        # has no .get() — that would raise AttributeError, sailing straight past
+        # the ValueError above. Check the shape before reading the error field.
+        oauth_error = payload.get("error") if isinstance(payload, dict) else None
         if oauth_error == "invalid_grant":
             raise TokenRefreshError(
                 f"EVE SSO rejected the refresh token for character "

@@ -5,7 +5,10 @@
 
 {% if character %}
 <p>logged in as: <strong>{{ character.character_name }}</strong>
-<a href="/transactions/sync" class="btn btn-outline-secondary btn-sm ms-2" title="Sync Transactions">&#x21bb;</a>
+<form method="POST" action="/transactions/sync" class="d-inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-outline-secondary btn-sm ms-2" title="Sync Transactions">&#x21bb;</button>
+</form>
 <a href="/login" class="btn btn-outline-secondary btn-sm ms-2">+ Add Character</a>
 </p>
 

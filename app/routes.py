@@ -1,5 +1,5 @@
-from flask import Blueprint, render_template, session, redirect, url_for, request
-from app.models import Character, Transaction, JournalEntry, StockLimit
+from flask import Blueprint, render_template, session, redirect, url_for, request, abort
+from app.models import Character, Transaction, JournalEntry, StockLimit, AccessAttempt
 from app import db
 from collections import defaultdict
 from app.sde import (
@@ -293,6 +293,140 @@ def fetch_esi_pages(character, endpoint):
     return results
 
 
+def get_current_user():
+    """Resolve this request to a User row, or None if not signed in.
+
+    THE single point where corp-website identity enters this application. Every
+    ownership decision downstream depends on it, so it stays one function with
+    one job — no route may work out "who is this" for itself.
+
+    The host site supplies identity via app/integration.py. Nothing here needs
+    editing to integrate; see that file.
+
+    local mode -> the bootstrap admin (standalone dev on a laptop)
+    corp mode  -> integration.resolve_current_identity(), mirrored into a local
+                  User row so linked EVE characters have an owner to hang off
+
+    Returning None means "signed out", and every data query is scoped by the
+    resolved user — so a missing or broken integration yields empty pages, not
+    somebody else's data.
+    """
+    from app.models import User, BOOTSTRAP_EXTERNAL_ID, ROLE_ADMIN, ROLE_MEMBER
+    from app import integration
+
+    if integration.integration_mode() != "corp":
+        return User.query.filter_by(external_id=BOOTSTRAP_EXTERNAL_ID).first()
+
+    identity = integration.resolve_current_identity()
+    if not identity or not identity.get("external_id"):
+        return None
+
+    external_id = str(identity["external_id"])
+    role = ROLE_ADMIN if integration.role_is_admin(identity.get("role")) else ROLE_MEMBER
+
+    # Mirror the host site's user locally. The corp site stays the source of
+    # truth — the local row exists only to own linked characters, and the rank
+    # is refreshed on every request so a demotion there takes effect here
+    # immediately rather than at next login.
+    user = User.query.filter_by(external_id=external_id).first()
+    if user is None:
+        user = User(external_id=external_id, role=role)
+        db.session.add(user)
+        db.session.commit()
+    elif user.role != role:
+        user.role = role
+        db.session.commit()
+    return user
+
+
+def owned_characters(user=None):
+    """Every Character the current user is allowed to see.
+
+    THE only way a route may reach Character rows. Routes must never call
+    Character.query themselves — that is exactly how a page ends up leaking the
+    whole corp.
+
+        member -> their own linked alts
+        admin  -> everyone (directors / HR / CEO)
+
+    DENY BY DEFAULT: with no signed-in user this returns an EMPTY list, never
+    the full table. So a route that forgets to scope shows nothing — a visible
+    bug — instead of everyone's data, which is a silent breach.
+    """
+    if user is None:
+        user = get_current_user()
+    if user is None:
+        return []
+    if user.is_admin:
+        return Character.query.all()
+    return Character.query.filter_by(user_id=user.id).all()
+
+
+def owned_character_ids(user=None):
+    # EVE character_ids (not User.id) — Transaction and JournalEntry key off
+    # character_id, so this is what scopes their queries. An empty list makes
+    # `.in_([])` match no rows, which is the correct deny-by-default outcome.
+    return [c.character_id for c in owned_characters(user)]
+
+
+def deny_as_spy(detail):
+    """Block an attempt to reach data belonging to someone else.
+
+    Records the attempt before blocking — in a corp the audit trail is the
+    genuinely valuable half: leadership wants to know who went looking. Then
+    raises 403, which renders the spy page.
+    """
+    user = get_current_user()
+    try:
+        db.session.add(AccessAttempt(
+            user_id=user.id if user else None,
+            at=datetime.now(timezone.utc),
+            path=request.path,
+            detail=detail[:255],
+        ))
+        db.session.commit()
+    except Exception:
+        # Failing to write the audit row must never prevent the block itself.
+        db.session.rollback()
+    abort(403)
+
+
+@main.app_errorhandler(403)
+def forbidden(_error):
+    return render_template("spy.html"), 403
+
+
+@main.app_context_processor
+def inject_current_user():
+    # Lets every template ask {{ current_user }} — e.g. base.html only shows
+    # the admin nav link to admins. Backed by the same single identity seam.
+    return {"current_user": get_current_user()}
+
+
+@main.route("/admin/access-log")
+def admin_access_log():
+    # Leadership's view of blocked snooping attempts. Admin-only — a member
+    # opening it by URL is itself logged and blocked.
+    user = get_current_user()
+    if user is None:
+        return redirect(url_for("main.index"))
+    if not user.is_admin:
+        deny_as_spy("opened the admin access log without being an admin")
+
+    attempts = (AccessAttempt.query
+                .order_by(AccessAttempt.at.desc())
+                .limit(200).all())
+    from app.models import User as UserModel
+    names = {u.id: u.external_id for u in UserModel.query.all()}
+    rows = [{
+        "at": a.at,
+        "who": names.get(a.user_id, "(not signed in)"),
+        "path": a.path,
+        "detail": a.detail,
+    } for a in attempts]
+    return render_template("access-log.html", rows=rows)
+
+
 def get_character():
     # Every route that needs a logged-in character goes through here, so token
     # refresh happens automatically before any ESI call needs a valid token.
@@ -300,6 +434,13 @@ def get_character():
         return None
     character = Character.query.filter_by(character_id=session["character_id"]).first()
     if not character:
+        session.clear()
+        return None
+    # The session's character must actually belong to the signed-in user. A
+    # stale session (or a tampered cookie) must not hand back somebody else's
+    # character row — that row carries their ESI access token.
+    _user = get_current_user()
+    if not _user or character.user_id != _user.id:
         session.clear()
         return None
     if character.token_expiry.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
@@ -419,13 +560,18 @@ def _snapshot(character):
 
 
 def _selected_characters():
-    # Pages default to the whole operation (every stored alt); ?character=<id>
-    # narrows to one. Returns (all chars for the dropdown, chars to fetch,
-    # raw selection string for re-rendering the filter).
-    all_chars = Character.query.all()
+    # Pages default to everything the user may see; ?character=<id> narrows to
+    # one. Returns (chars for the dropdown, chars to fetch, raw selection
+    # string for re-rendering the filter).
+    all_chars = owned_characters()
     sel = request.args.get("character", "")
     if sel.isdigit():
         fetch_chars = [c for c in all_chars if c.character_id == int(sel)]
+        # Asking for a character that isn't yours is a deliberate probe — the
+        # id had to be typed into the URL. Block and log rather than quietly
+        # rendering an empty page, which would leak whether the id exists.
+        if not fetch_chars:
+            deny_as_spy(f"requested character_id={sel} which they do not own")
     else:
         fetch_chars = all_chars
     return all_chars, fetch_chars, sel
@@ -501,10 +647,11 @@ def index():
     period_label = {"7d": "Last 7 days", "30d": "Last 30 days", "90d": "Last 90 days", "all": "All time"}.get(period, "All time")
 
     if character:
-        # The whole dashboard aggregates over EVERY linked character — the Jita
-        # buyer alt's purchases, the main's builds, the PI alt's taxes all roll
-        # into one industry operation. Per-character numbers go in alt_rows.
-        characters = Character.query.all()
+        # The dashboard aggregates over every character THIS USER may see — a
+        # member's own alts (buyer alt + indy main + PI alt roll into one
+        # operation), or the whole corp for an admin.
+        characters = owned_characters()
+        scoped_char_ids = [ch.character_id for ch in characters]
 
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         jobs_by_char = {ch.character_id: 0 for ch in characters}
@@ -548,6 +695,7 @@ def index():
         # taxes/fees on them were still really paid and stay in the journal.
         internal_ids = [
             row[0] for row in db.session.query(Transaction.transaction_id)
+            .filter(Transaction.character_id.in_(scoped_char_ids))
             .group_by(Transaction.transaction_id)
             .having(func.count(func.distinct(Transaction.character_id)) > 1)
             .all()
@@ -555,16 +703,19 @@ def index():
 
         # SQL aggregates grouped per character AND per item, so one pass feeds
         # both the combined totals and the per-alt breakdown.
+        # .in_(scoped_char_ids) is the ownership boundary for all money figures.
+        # An empty list matches no rows, so a user with no characters sees zeros
+        # rather than the corp's totals.
         buy_q = db.session.query(
             Transaction.character_id,
             Transaction.type_id,
             func.sum(Transaction.unit_price * Transaction.quantity).label("total"),
-        ).filter_by(is_buy=True)
+        ).filter_by(is_buy=True).filter(Transaction.character_id.in_(scoped_char_ids))
         sell_q = db.session.query(
             Transaction.character_id,
             Transaction.type_id,
             func.sum(Transaction.unit_price * Transaction.quantity).label("total"),
-        ).filter_by(is_buy=False)
+        ).filter_by(is_buy=False).filter(Transaction.character_id.in_(scoped_char_ids))
 
         if cutoff_date:
             buy_q = buy_q.filter(Transaction.date >= cutoff_date)
@@ -628,7 +779,10 @@ def index():
             JournalEntry.character_id,
             JournalEntry.ref_type,
             func.sum(JournalEntry.amount).label("total"),
-        ).filter(JournalEntry.ref_type.in_(FEE_REF_TYPES))
+        ).filter(
+            JournalEntry.ref_type.in_(FEE_REF_TYPES),
+            JournalEntry.character_id.in_(scoped_char_ids),
+        )
         if cutoff_date:
             tax_q = tax_q.filter(JournalEntry.date >= cutoff_date)
         tax_rows = tax_q.group_by(
@@ -751,7 +905,13 @@ def inventory():
     except Exception:
         prices = {}
 
-    limits = {sl.type_id: sl.min_qty for sl in StockLimit.query.all()}
+    # Thresholds are per user — otherwise one member's limit would paint red
+    # flags across everyone else's inventory page.
+    _user = get_current_user()
+    limits = {
+        sl.type_id: sl.min_qty
+        for sl in StockLimit.query.filter_by(user_id=_user.id if _user else None).all()
+    }
 
     item_info = get_item_categories(inventory.keys())
     grouped = {}
@@ -889,11 +1049,17 @@ def set_stock_limit():
     if not character:
         return redirect(url_for("main.index"))
 
+    user = get_current_user()
+    if not user:
+        deny_as_spy("attempted to set a stock limit with no resolvable user")
+
     type_id = request.form.get("type_id", "")
     min_qty = request.form.get("min_qty", "").strip()
     if type_id.isdigit():
         type_id = int(type_id)
-        row = StockLimit.query.filter_by(type_id=type_id).first()
+        # Scoped by user_id on the WRITE path too, not just the read. Without
+        # this a POST could edit or delete another member's threshold by id.
+        row = StockLimit.query.filter_by(user_id=user.id, type_id=type_id).first()
         # Empty or zero clears the limit; a positive number sets/updates it.
         if not min_qty.isdigit() or int(min_qty) <= 0:
             if row:
@@ -901,7 +1067,9 @@ def set_stock_limit():
         elif row:
             row.min_qty = int(min_qty)
         else:
-            db.session.add(StockLimit(type_id=type_id, min_qty=int(min_qty)))
+            db.session.add(StockLimit(
+                user_id=user.id, type_id=type_id, min_qty=int(min_qty)
+            ))
         db.session.commit()
 
     # Bounce back to the inventory view (with its filters) the form came from;
@@ -918,7 +1086,7 @@ def calculator():
     if not character:
         return redirect(url_for("main.index"))
 
-    all_chars = Character.query.all()
+    all_chars = owned_characters()
     raw_blueprints = _gather_esi(all_chars, "blueprints", "blueprints/", ttl=600)
 
     best_me = {}
@@ -999,13 +1167,19 @@ def transactions():
     if not character:
         return redirect(url_for("main.index"))
 
-    characters = Character.query.all()
+    characters = owned_characters()
     char_names = {c.character_id: c.character_name for c in characters}
+    scoped_char_ids = [c.character_id for c in characters]
 
-    q = Transaction.query
+    # Ownership boundary: this page can only ever show the user's own trades.
+    q = Transaction.query.filter(Transaction.character_id.in_(scoped_char_ids))
 
     sel_char = request.args.get("character", "")
     if sel_char.isdigit():
+        # Filtering to a character you don't own is a probe, same as on the
+        # other pages — the id had to be put in the URL by hand.
+        if int(sel_char) not in scoped_char_ids:
+            deny_as_spy(f"filtered transactions by character_id={sel_char} which they do not own")
         q = q.filter_by(character_id=int(sel_char))
 
     side = request.args.get("side", "")
@@ -1057,8 +1231,10 @@ def transactions():
     )
 
 
-@main.route("/notify/test")
+@main.route("/notify/test", methods=["POST"])
 def notify_test():
+    # POST: sends a push — a GET with side effects can be triggered by any
+    # page that embeds the URL (<img src=...>), and CSRF only guards POSTs.
     character = get_character()
     if not character:
         return redirect(url_for("main.index"))
@@ -1070,14 +1246,18 @@ def notify_test():
             "Add NTFY_TOPIC=<your-topic-name> and restart."), 200
 
 
-@main.route("/transactions/sync")
+@main.route("/transactions/sync", methods=["POST"])
 def sync_transactions():
+    # POST for the same reason as /notify/test: it writes to the DB and burns
+    # ESI calls, so it must not be triggerable by embedding a URL in a page.
     character = get_character()
     if not character:
         return redirect(url_for("main.index"))
-    # Manual sync covers every linked alt, and pulls the wallet journal (taxes/
-    # fees) alongside market transactions — same as the 30-minute auto-sync.
-    for ch in Character.query.all():
+    # Manual sync covers the user's own alts, and pulls the wallet journal
+    # (taxes/fees) alongside market transactions — same as the 30-minute
+    # auto-sync. Scoped so nobody can burn ESI calls against other people's
+    # characters (the scheduler still syncs everyone, on its own schedule).
+    for ch in owned_characters():
         try:
             ch = refresh_if_expired(ch)
             sync_character_transactions(ch)

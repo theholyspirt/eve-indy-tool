@@ -55,6 +55,7 @@
                     <td class="text-end">{{ "{:,.0f}".format(item["value"]) }}</td>
                     <td class="text-end">
                         <form method="POST" action="/inventory/limit" class="d-inline-flex gap-1 justify-content-end">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <input type="hidden" name="type_id" value="{{ item['type_id'] }}">
                             <input type="number" name="min_qty" class="form-control form-control-sm limit-input"
                                    min="0" placeholder="&mdash;"

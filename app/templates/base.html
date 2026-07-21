@@ -17,6 +17,9 @@
             <a class="btn btn-outline-light btn-sm me-2" href="/inventory">Inventory</a>
             <a class="btn btn-outline-light btn-sm me-2" href="/build">Build Readiness</a>
             <a class="btn btn-outline-light btn-sm me-2" href="/calculator">Calculator</a>
+            {% if current_user and current_user.is_admin %}
+            <a class="btn btn-outline-warning btn-sm me-2" href="/admin/access-log">Access Log</a>
+            {% endif %}
             <a class="btn btn-outline-danger btn-sm" href="/logout">Logout</a>
         </div>
     </nav>
