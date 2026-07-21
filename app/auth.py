@@ -190,8 +190,19 @@ def refresh_access_token(character):
         auth=(os.getenv("EVE_CLIENT_ID"), os.getenv("EVE_CLIENT_SECRET")),
         headers=SSO_HEADERS,
     )
+    # A revoked/expired refresh token (e.g. the user changed their EVE password)
+    # comes back as a 4xx with no access_token — surface it as a clean error the
+    # callers already handle, instead of a bare KeyError on token["access_token"].
+    if not response.ok:
+        raise RuntimeError(
+            f"token refresh failed for {character.character_id}: HTTP {response.status_code}"
+        )
     token = response.json()
     character.access_token = token["access_token"]
+    # EVE SSO can rotate the refresh token; persist the new one when it does,
+    # otherwise the next refresh would reuse a stale token and fail.
+    if token.get("refresh_token"):
+        character.refresh_token = token["refresh_token"]
     character.token_expiry = datetime.now(timezone.utc) + timedelta(seconds=token["expires_in"])
     db.session.commit()
     return character

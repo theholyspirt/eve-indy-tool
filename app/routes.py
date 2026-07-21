@@ -11,9 +11,6 @@ from app.sde import (
     get_industry_input_ids,
     get_industry_output_ids,
     search_type_ids,
-    get_ship_skills,
-    get_ship_stats,
-    get_module_stats,
 )
 from sqlalchemy import func
 import requests
@@ -306,7 +303,13 @@ def get_character():
         session.clear()
         return None
     if character.token_expiry.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
-        character = refresh_access_token(character)
+        # If the primary character's refresh token is dead (revoked, password
+        # change), treat them as logged out rather than 500ing every page.
+        try:
+            character = refresh_access_token(character)
+        except Exception:
+            session.clear()
+            return None
     return character
 
 
@@ -1079,22 +1082,3 @@ def sync_transactions():
         except Exception:
             continue
     return redirect(url_for("main.index"))
-
-
-@main.route("/api/search-types")
-def api_search_types():
-    # Search for item types by name, returns JSON array for autocomplete.
-    # Frontend expects flat array: [{"type_id": ..., "name": ...}, ...]
-    query = request.args.get("q", "").strip()
-    limit = int(request.args.get("limit", 10))
-
-    if not query or len(query) < 2:
-        return []
-
-    type_ids = search_type_ids(query, limit)
-    type_names = get_type_names(set(type_ids))
-
-    return [
-        {"type_id": tid, "name": type_names.get(tid, "Unknown")}
-        for tid in type_ids
-    ]

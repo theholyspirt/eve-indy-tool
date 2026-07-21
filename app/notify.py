@@ -13,18 +13,17 @@ def notify(title, message, priority="default"):
         return False
     url = topic if topic.startswith("http") else f"https://ntfy.sh/{topic}"
     try:
-        requests.post(
+        response = requests.post(
             url,
             data=message.encode("utf-8"),
             headers={"Title": title, "Priority": priority},
             timeout=10,
         )
-        return True
+        # Report success only if ntfy actually accepted it, so callers like
+        # /notify/test don't claim "sent" on a rejected topic or server error.
+        return response.ok
     except requests.RequestException:
         # Notifications are best-effort — a dead ntfy server must never take
         # down a sync cycle or a page load.
         return False
-
-
-
 

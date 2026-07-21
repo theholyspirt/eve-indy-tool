@@ -76,7 +76,10 @@ def create_app():
 
     app.register_blueprint(auth)
     with app.app_context():
-        from . import models
+        # Imported for its side effect: importing the module registers the
+        # Character/Transaction/JournalEntry/StockLimit models on db.metadata so
+        # db.create_all() below actually creates their tables. Not called directly.
+        from . import models  # noqa: F401
 
         _migrate_transaction_unique()
         db.create_all()

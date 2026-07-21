@@ -10,6 +10,7 @@ A personal Flask web app for tracking EVE Online industry — manufacturing jobs
 - **Blueprints** — All owned blueprints grouped by type, showing BPO/BPC counts, total runs, ME, and TE
 - **Inventory** — All character assets grouped by category with filters
 - **Build Readiness** — Cross-references blueprints against inventory to show how many runs you can complete right now
+- **Calculator** — Manufacturing cost/profit per blueprint using live market-hub prices, plus a shopping list for missing materials
 - **Transaction tracking** — Wallet transactions saved to local database, auto-synced every 30 minutes
 
 ---
@@ -54,7 +55,7 @@ pip install -r requirements.txt
 Download the SQLite version of the EVE Static Data Export from:
 https://developers.eveonline.com/resource/resources
 
-Place the file as `eve.db` in the root of the project (same level as `run.py`).
+Place the file as `eve.db` in the root of the project (the top-level `eve_indy/` folder).
 
 ### 5. Create your .env file
 
@@ -81,7 +82,7 @@ Go to [developers.eveonline.com](https://developers.eveonline.com) and create an
 ### 7. Run the app
 
 ```bash
-python run.py
+python -m app.run
 ```
 
 Visit `http://localhost:5000` and log in with your EVE character.
@@ -97,22 +98,25 @@ eve_indy/
 ├── README.md
 ├── CLAUDE.md              # developer/AI context file
 ├── requirements.txt
-├── run.py                 # app entry point
 ├── eve.db                 # EVE SDE — never commit this (too large)
 ├── venv/
 └── app/
     ├── __init__.py        # app factory, starts background scheduler
-    ├── models.py          # SQLAlchemy models (Character, Transaction)
+    ├── run.py             # app entry point (run with: python -m app.run)
+    ├── models.py          # SQLAlchemy models (Character, Transaction, JournalEntry, StockLimit)
     ├── auth.py            # EVE SSO OAuth2 login/logout/token refresh
     ├── routes.py          # page routes and ESI helpers
     ├── sde.py             # EVE SDE lookups with in-memory caching
-    ├── scheduler.py       # background auto-sync job (APScheduler)
+    ├── scheduler.py       # background auto-sync + job-alert jobs (APScheduler)
+    ├── notify.py          # Ntfy push notifications
     └── templates/
         ├── base.html
         ├── index.html
         ├── blueprints.html
         ├── inventory.html
-        └── build.html
+        ├── build.html
+        ├── calculator.html
+        └── transactions.html
 ```
 
 ---
