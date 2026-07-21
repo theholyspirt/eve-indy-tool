@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Inventory</h1>
+<p class="text-muted">Estimated market value of shown items:
+    <strong>{{ "{:,.0f}".format(total_value) }} ISK</strong>
+    <span class="small">(CCP average prices, refreshed ~30 min)</span>
+</p>
+<form method="GET" class="mb-4">
+    <div class="mb-2">
+        <select name="character" class="form-select form-select-sm d-inline-block w-auto">
+            <option value="">All characters</option>
+            {% for c in all_characters %}
+            <option value="{{ c.character_id }}"
+                    {% if selected_character == c.character_id|string %}selected{% endif %}>
+                {{ c.character_name }}
+            </option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="d-flex flex-wrap gap-3">
+        {% for cat in ["Material", "Planetary Commodities", "Commodity", "Reaction", "Ship", "Module", "Drone",
+        "Charge", "Blueprint"] %}
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="categories" value="{{ cat }}" {% if cat in
+                selected_categories %}checked{% endif %}>
+            <label class="form-check-label">{{ cat }}</label>
+        </div>
+        {% endfor %}
+    </div>
+    <button class="btn btn-primary btn-sm mt-2" type="submit">Apply</button>
+</form>
+
+{% for category, items in grouped.items() %}
+<div class="card mt-4">
+    <div class="card-header d-flex justify-content-between">
+        <strong>{{ category }}</strong>
+        <span class="text-muted">{{ "{:,.0f}".format(category_totals[category]) }} ISK</span>
+    </div>
+    <div class="card-body">
+        <table class="table table-sm mb-0">
+            <thead>
+                <tr>
+                    <th>Item</th>
+                    <th class="text-end">Quantity</th>
+                    <th class="text-end">Est. Value</th>
+                    <th class="text-end" title="Quantity turns red when it drops below this. Empty = no limit.">Low Limit</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                <tr>
+                    <td>{{ item["name"] }}</td>
+                    <td class="text-end {% if item['low'] %}stock-low{% endif %}">{{ "{:,}".format(item["qty"]) }}</td>
+                    <td class="text-end">{{ "{:,.0f}".format(item["value"]) }}</td>
+                    <td class="text-end">
+                        <form method="POST" action="/inventory/limit" class="d-inline-flex gap-1 justify-content-end">
+                            <input type="hidden" name="type_id" value="{{ item['type_id'] }}">
+                            <input type="number" name="min_qty" class="form-control form-control-sm limit-input"
+                                   min="0" placeholder="&mdash;"
+                                   value="{{ item['limit'] if item['limit'] else '' }}">
+                            <button class="btn btn-outline-secondary btn-sm" type="submit">Set</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endfor %}
+
+{% endblock %}

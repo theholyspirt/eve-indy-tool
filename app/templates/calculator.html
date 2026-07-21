@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Manufacturing Calculator</h1>
+
+<form method="GET" class="row g-2 mt-2 mb-3 align-items-end">
+    <div class="col-auto">
+        <label class="form-label mb-1">Blueprint</label>
+        <select name="bp" class="form-select form-select-sm">
+            <option value="">Choose a blueprint...</option>
+            {% for bp in bp_options %}
+            <option value="{{ bp['type_id'] }}"
+                    {% if selected_bp == bp['type_id']|string %}selected{% endif %}>
+                {{ bp["name"] }}
+            </option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-auto">
+        <label class="form-label mb-1">Runs</label>
+        <input type="number" name="runs" class="form-control form-control-sm"
+               min="1" max="1000000" value="{{ runs }}" style="width: 7rem;">
+    </div>
+    <div class="col-auto">
+        <label class="form-label mb-1">Market Hub</label>
+        <select name="hub" class="form-select form-select-sm">
+            {% for hub_key, hub_info in market_hubs.items() %}
+            <option value="{{ hub_key }}"
+                    {% if selected_hub == hub_key %}selected{% endif %}>
+                {{ hub_info["name"] }}
+            </option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-auto">
+        <button class="btn btn-primary btn-sm" type="submit">Calculate</button>
+    </div>
+</form>
+
+{% if not bp_options %}
+<p class="text-muted">No manufacturable blueprints found. If you just logged in,
+give the blueprint fetch a moment and refresh.</p>
+{% endif %}
+
+{% if plan_error %}
+<div class="alert alert-warning">{{ plan_error }}</div>
+{% endif %}
+
+{% if plan %}
+<p class="text-muted">
+    {{ plan["blueprint_name"] }} @ ME{{ plan["me"] }} &times; {{ "{:,}".format(plan["runs"]) }} runs
+    &rarr; {{ "{:,}".format(plan["output_qty"]) }} &times; {{ plan["product_name"] }}
+</p>
+
+{% if plan["missing_prices"] %}
+<div class="alert alert-warning">
+    Some items have no Jita sell orders — their cost/revenue is counted as 0, so
+    treat these totals as incomplete.
+</div>
+{% endif %}
+
+<div class="row mt-3">
+    <div class="col-md-3">
+        <div class="card text-white bg-danger">
+            <div class="card-body">
+                <h6 class="card-title">Material Cost (Jita Sell)</h6>
+                <p class="card-text fs-6">{{ "{:,.0f}".format(plan["material_cost"]) }} ISK</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-success">
+            <div class="card-body">
+                <h6 class="card-title">Revenue ({{ "{:,.0f}".format(plan["product_sell"]) }}/u)</h6>
+                <p class="card-text fs-6">{{ "{:,.0f}".format(plan["revenue"]) }} ISK</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card {% if plan['profit'] >= 0 %}text-white bg-primary{% else %}text-dark bg-warning{% endif %}">
+            <div class="card-body">
+                <h6 class="card-title">Profit ({{ "{:,.0f}".format(plan["profit_per_run"]) }}/run)</h6>
+                <p class="card-text fs-6">{{ "{:,.0f}".format(plan["profit"]) }} ISK
+                    {% if plan["margin"] is not none %}
+                    <span class="small">({{ "{:.1f}".format(plan["margin"]) }}%)</span>
+                    {% endif %}
+                </p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body">
+                <h6 class="card-title">Shopping Cost (missing only)</h6>
+                <p class="card-text fs-6">{{ "{:,.0f}".format(plan["shopping_cost"]) }} ISK</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<p class="text-muted small mt-2">Before sales tax, broker fees, and job install costs.
+On-hand quantities are combined across all characters.</p>
+
+<table class="table table-sm table-hover mt-3">
+    <thead>
+        <tr>
+            <th>Material</th>
+            <th class="text-end">Need (ME{{ plan["me"] }})</th>
+            <th class="text-end">On Hand</th>
+            <th class="text-end">Missing</th>
+            <th class="text-end">Jita Sell</th>
+            <th class="text-end">Cost (all)</th>
+            <th class="text-end">Cost (missing)</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for r in plan["rows"] %}
+        <tr>
+            <td>{{ r["name"] }}</td>
+            <td class="text-end">{{ "{:,}".format(r["need"]) }}</td>
+            <td class="text-end">{{ "{:,}".format(r["have"]) }}</td>
+            <td class="text-end {% if r['missing'] > 0 %}text-warning{% endif %}">
+                {{ "{:,}".format(r["missing"]) }}
+            </td>
+            <td class="text-end">{{ "{:,.2f}".format(r["price"]) }}</td>
+            <td class="text-end">{{ "{:,.0f}".format(r["cost"]) }}</td>
+            <td class="text-end">{{ "{:,.0f}".format(r["shopping_cost"]) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+    <tfoot>
+        <tr class="fw-bold">
+            <td>Total</td>
+            <td colspan="4"></td>
+            <td class="text-end">{{ "{:,.0f}".format(plan["material_cost"]) }}</td>
+            <td class="text-end">{{ "{:,.0f}".format(plan["shopping_cost"]) }}</td>
+        </tr>
+    </tfoot>
+</table>
+{% endif %}
+
+{% endblock %}

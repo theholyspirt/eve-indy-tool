@@ -1,0 +1,331 @@
+/* ---------------------------------------------------------
+   EVE Industry Toolbox — dark theme
+   Layered on top of Bootstrap 5. Accent color is EVE-ish cyan.
+--------------------------------------------------------- */
+
+:root {
+    --bg: #0d1117;
+    --bg-elevated: #151b23;
+    --bg-card: #1a212b;
+    --border: #2a3542;
+    --text: #dfe6ee;
+    --text-muted: #8b98a8;
+    --accent: #3ecfff;
+    --accent-dim: #1d7fa3;
+    --danger: #ff5c5c;
+    --success: #35d48a;
+    --warning: #ffb454;
+}
+
+body {
+    background-color: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+}
+
+/* ---------- Navbar ---------- */
+
+.navbar {
+    background-color: var(--bg-elevated) !important;
+    border-bottom: 1px solid var(--border);
+}
+
+.navbar-brand {
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--accent) !important;
+}
+
+/* ---------- Buttons ---------- */
+
+.btn {
+    border-radius: 6px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    border: 1px solid transparent;
+    transition: transform 0.08s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+
+.btn:active {
+    transform: translateY(1px);
+}
+
+.btn-primary {
+    background-color: var(--accent);
+    border-color: var(--accent);
+    color: #06222c;
+}
+
+.btn-primary:hover,
+.btn-primary:focus {
+    background-color: #5fdaff;
+    border-color: #5fdaff;
+    color: #06222c;
+    box-shadow: 0 0 0 3px rgba(62, 207, 255, 0.25);
+}
+
+.btn-outline-light {
+    color: var(--text);
+    border-color: var(--border);
+    background-color: transparent;
+}
+
+.btn-outline-light:hover,
+.btn-outline-light:focus {
+    background-color: var(--accent);
+    border-color: var(--accent);
+    color: #06222c;
+    box-shadow: 0 0 0 3px rgba(62, 207, 255, 0.2);
+}
+
+.btn-outline-secondary {
+    color: var(--text-muted);
+    border-color: var(--border);
+}
+
+.btn-outline-secondary:hover,
+.btn-outline-secondary:focus {
+    background-color: var(--bg-card);
+    border-color: var(--accent-dim);
+    color: var(--accent);
+}
+
+.btn-outline-danger {
+    color: var(--danger);
+    border-color: var(--danger);
+    background-color: transparent;
+}
+
+.btn-outline-danger:hover,
+.btn-outline-danger:focus {
+    background-color: var(--danger);
+    border-color: var(--danger);
+    color: #2b0a0a;
+    box-shadow: 0 0 0 3px rgba(255, 92, 92, 0.2);
+}
+
+.btn-sm {
+    padding: 0.35rem 0.9rem;
+    font-size: 0.85rem;
+}
+
+/* ---------- Cards ---------- */
+
+.card {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+
+.card.bg-danger {
+    background-color: rgba(255, 92, 92, 0.12) !important;
+    border-color: rgba(255, 92, 92, 0.35);
+}
+
+.card.bg-success {
+    background-color: rgba(53, 212, 138, 0.12) !important;
+    border-color: rgba(53, 212, 138, 0.35);
+}
+
+.card.bg-primary {
+    background-color: rgba(62, 207, 255, 0.12) !important;
+    border-color: rgba(62, 207, 255, 0.35);
+}
+
+.card.bg-warning {
+    background-color: rgba(255, 180, 84, 0.12) !important;
+    border-color: rgba(255, 180, 84, 0.35);
+}
+
+.card .card-title {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.card.bg-danger .card-text { color: var(--danger); font-weight: 600; }
+.card.bg-success .card-text { color: var(--success); font-weight: 600; }
+.card.bg-primary .card-text { color: var(--accent); font-weight: 600; }
+.card.bg-warning .card-text { color: var(--warning); font-weight: 600; }
+
+/* ---------- Tables ---------- */
+
+/* Bootstrap paints every cell from these variables (--bs-table-bg etc), not from
+   body/color properties, so plain color/background-color rules on .table are
+   ignored by the cells themselves — override the variables instead. */
+.table {
+    --bs-table-bg: var(--bg-card);
+    --bs-table-color: var(--text);
+    --bs-table-border-color: var(--border);
+    --bs-table-striped-bg: rgba(255, 255, 255, 0.03);
+    --bs-table-striped-color: var(--text);
+    --bs-table-hover-bg: rgba(62, 207, 255, 0.08);
+    --bs-table-hover-color: var(--text);
+    --bs-table-active-bg: rgba(62, 207, 255, 0.12);
+    --bs-table-active-color: var(--text);
+    color: var(--text);
+    border-color: var(--border);
+}
+
+.table thead th {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+}
+
+.table td, .table th {
+    border-color: var(--border);
+}
+
+.table-striped > tbody > tr:nth-of-type(odd) > * {
+    background-color: rgba(255, 255, 255, 0.02);
+    color: var(--text);
+}
+
+.table-hover > tbody > tr:hover > * {
+    background-color: rgba(62, 207, 255, 0.06);
+    color: var(--text);
+}
+
+/* ---------- Muted text & forms (Bootstrap defaults assume a light page) ---------- */
+
+/* Bootstrap's .text-muted is dark gray with its own !important — on our dark
+   background it's unreadable, so it must be overridden with !important too. */
+.text-muted {
+    color: var(--text-muted) !important;
+}
+
+.form-control,
+.form-select {
+    background-color: var(--bg-elevated);
+    border-color: var(--border);
+    color: var(--text);
+}
+
+.form-control:focus,
+.form-select:focus {
+    background-color: var(--bg-elevated);
+    border-color: var(--accent-dim);
+    color: var(--text);
+    box-shadow: 0 0 0 3px rgba(62, 207, 255, 0.15);
+}
+
+.form-control::placeholder {
+    color: var(--text-muted);
+}
+
+/* Bootstrap's select chevron is a dark SVG baked into a background-image —
+   swap it for the same shape in our muted gray so it shows on dark. */
+.form-select {
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%238b98a8' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
+}
+
+/* Same story for the native date-picker calendar icon (webkit). */
+input[type="date"]::-webkit-calendar-picker-indicator {
+    filter: invert(0.7);
+}
+
+.form-check-input {
+    background-color: var(--bg-elevated);
+    border-color: var(--border);
+}
+
+.form-check-input:checked {
+    background-color: var(--accent);
+    border-color: var(--accent);
+}
+
+.alert-warning {
+    background-color: rgba(255, 180, 84, 0.12);
+    border-color: rgba(255, 180, 84, 0.35);
+    color: var(--warning);
+}
+
+/* ---------- Low stock ---------- */
+
+/* !important because Bootstrap paints table cell text via its own CSS
+   variables, which outrank a plain class color here. */
+.stock-low {
+    color: var(--danger) !important;
+    font-weight: 700;
+}
+
+.limit-input {
+    width: 6.5rem;
+}
+
+/* ---------- Buy/Sell badges ---------- */
+
+.badge-buy,
+.badge-sell {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+}
+
+.badge-buy {
+    color: var(--danger);
+    background-color: rgba(255, 92, 92, 0.12);
+    border: 1px solid rgba(255, 92, 92, 0.35);
+}
+
+.badge-sell {
+    color: var(--success);
+    background-color: rgba(53, 212, 138, 0.12);
+    border: 1px solid rgba(53, 212, 138, 0.35);
+}
+
+/* ---------- Hover tooltip (pure CSS, no JS) ---------- */
+
+.tooltip-host {
+    position: relative;
+}
+
+.tooltip-host .hover-tip {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: var(--bg-elevated);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.45rem 0.8rem;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    z-index: 20;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+}
+
+.tooltip-host:hover .hover-tip {
+    display: block;
+}
+
+/* ---------- Misc ---------- */
+
+a {
+    color: var(--accent);
+}
+
+a:hover {
+    color: #5fdaff;
+}
+
+footer.border-top {
+    border-color: var(--border) !important;
+    color: var(--text-muted) !important;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    color: var(--text);
+}

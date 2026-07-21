@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Blueprints</h1>
+
+<form method="GET" class="mt-3">
+    <select name="character" class="form-select form-select-sm d-inline-block w-auto"
+            onchange="this.form.submit()">
+        <option value="">All characters</option>
+        {% for c in all_characters %}
+        <option value="{{ c.character_id }}"
+                {% if selected_character == c.character_id|string %}selected{% endif %}>
+            {{ c.character_name }}
+        </option>
+        {% endfor %}
+    </select>
+</form>
+
+<table class="table mt-4">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>BPO</th>
+            <th>BPC</th>
+            <th>Total Runs</th>
+            <th>Best ME</th>
+            <th>Best TE</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for blueprint in blueprints %}
+        <tr>
+            <td>{{ blueprint["name"] }}</td>
+            <td>{{ blueprint["bpo"] }}</td>
+            <td>{{ blueprint["bpc"] }}</td>
+            <td>{{ blueprint["total_runs"] }}</td>
+            <td>{{ blueprint["me"] }}</td>
+            <td>{{ blueprint["te"] }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

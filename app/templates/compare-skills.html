@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Fitting Validator</h1>
+<p class="text-muted">Compare two characters against a fit. Shows skill requirements.</p>
+
+<form method="POST" class="mb-4">
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <label class="form-label">Character 1</label>
+            <select name="char1" class="form-select" id="char1Select" required>
+                <option value="">Select a character...</option>
+                {% for c in all_characters %}
+                <option value="{{ c.character_id }}" {% if selected_char1 == c.character_id|string %}selected{% endif %}>
+                    {{ c.character_name }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-6">
+            <label class="form-label">Character 2</label>
+            <select name="char2" class="form-select" id="char2Select" required>
+                <option value="">Select a character...</option>
+                {% for c in all_characters %}
+                <option value="{{ c.character_id }}" {% if selected_char2 == c.character_id|string %}selected{% endif %}>
+                    {{ c.character_name }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+
+    <div>
+        <label class="form-label">Paste Fit (EFT format)</label>
+        <textarea name="fit" class="form-control" rows="8" placeholder="[Ship Name, ship type]&#10;Module 1&#10;Module 2&#10;..." required>{{ fit_text }}</textarea>
+        <small class="form-text text-muted">Paste fit export from in-game or EFT. First line should be [Ship Name, type].</small>
+        <button type="submit" class="btn btn-primary btn-sm mt-2">Analyze Fit</button>
+    </div>
+</form>
+
+{% if submitted and char1 and char2 %}
+    <!-- POST submitted — show results or errors -->
+    {% if parse_error %}
+    <div class="alert alert-danger mt-4">
+        <strong>Error:</strong> {{ parse_error }}
+    </div>
+    {% elif fit_name %}
+    <div class="mb-4">
+        <h4>{{ fit_name }}</h4>
+        {% if not comparison %}
+        <p class="text-muted">No skill requirements found for this fit.</p>
+        {% else %}
+        <table class="table table-sm table-hover">
+            <thead>
+                <tr>
+                    <th>Requirement</th>
+                    <th class="text-center">Needed / Available</th>
+                    <th class="text-center">{{ char1.character_name }}</th>
+                    <th class="text-center">{{ char2.character_name }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in comparison %}
+                <tr>
+                    <td>{{ row["skill_name"] }}</td>
+                    <td class="text-center fw-bold">Level {{ row["required_level"] }}</td>
+                    <td class="text-center {% if row['char1_meets'] %}text-success{% else %}text-danger{% endif %}">
+                        {% if row['char1_meets'] %}✓ {{ row["char1_level"] }}{% else %}✗ {{ row["char1_level"] }}{% endif %}
+                    </td>
+                    <td class="text-center {% if row['char2_meets'] %}text-success{% else %}text-danger{% endif %}">
+                        {% if row['char2_meets'] %}✓ {{ row["char2_level"] }}{% else %}✗ {{ row["char2_level"] }}{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="alert alert-info mt-3">
+            <strong>{{ char1.character_name }}:</strong>
+            {% set char1_can_fly = comparison|selectattr('char1_meets')|list|length == comparison|length %}
+            {% if char1_can_fly %}
+            <span class="text-success">Can fly this fit ✓</span>
+            {% else %}
+            <span class="text-danger">Cannot fly this fit ✗</span>
+            {% endif %}
+            <br>
+            <strong>{{ char2.character_name }}:</strong>
+            {% set char2_can_fly = comparison|selectattr('char2_meets')|list|length == comparison|length %}
+            {% if char2_can_fly %}
+            <span class="text-success">Can fly this fit ✓</span>
+            {% else %}
+            <span class="text-danger">Cannot fly this fit ✗</span>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+    {% else %}
+    <p class="text-muted mt-4">Paste a fit and click "Analyze Fit" to compare requirements.</p>
+    {% endif %}
+{% elif char1 and char2 %}
+    <p class="text-muted mt-4">Paste a fit and click "Analyze Fit" to compare requirements.</p>
+{% else %}
+    <p class="text-muted mt-4">Select two characters to compare their skills.</p>
+{% endif %}
+
+<script>
+// Update URL query parameters when characters change
+document.getElementById("char1Select").addEventListener("change", updateURL);
+document.getElementById("char2Select").addEventListener("change", updateURL);
+
+function updateURL() {
+    const char1 = document.getElementById("char1Select").value;
+    const char2 = document.getElementById("char2Select").value;
+    const params = new URLSearchParams();
+    if (char1) params.append("char1", char1);
+    if (char2) params.append("char2", char2);
+    const newUrl = params.toString() ? "/compare-skills?" + params : "/compare-skills";
+    window.history.replaceState({}, "", newUrl);
+}
+</script>
+{% endblock %}

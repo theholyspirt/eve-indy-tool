@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Transactions</h1>
+
+<form method="GET" class="row g-2 mt-2 mb-3 align-items-end">
+    <div class="col-auto">
+        <label class="form-label mb-1">Character</label>
+        <select name="character" class="form-select form-select-sm">
+            <option value="">All</option>
+            {% for c in characters %}
+            <option value="{{ c.character_id }}" {% if filters["character"] == c.character_id|string %}selected{% endif %}>
+                {{ c.character_name }}
+            </option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-auto">
+        <label class="form-label mb-1">Side</label>
+        <select name="side" class="form-select form-select-sm">
+            <option value="">Both</option>
+            <option value="buy" {% if filters["side"] == "buy" %}selected{% endif %}>Buys</option>
+            <option value="sell" {% if filters["side"] == "sell" %}selected{% endif %}>Sells</option>
+        </select>
+    </div>
+    <div class="col-auto">
+        <label class="form-label mb-1">Item</label>
+        <input type="text" name="item" class="form-control form-control-sm"
+               placeholder="name contains..." value="{{ filters['item'] }}">
+    </div>
+    <div class="col-auto">
+        <label class="form-label mb-1">From</label>
+        <input type="date" name="from" class="form-control form-control-sm" value="{{ filters['from'] }}">
+    </div>
+    <div class="col-auto">
+        <label class="form-label mb-1">To</label>
+        <input type="date" name="to" class="form-control form-control-sm" value="{{ filters['to'] }}">
+    </div>
+    <div class="col-auto">
+        <button class="btn btn-primary btn-sm" type="submit">Filter</button>
+        <a href="/transactions" class="btn btn-outline-secondary btn-sm">Clear</a>
+    </div>
+</form>
+
+{% if txns %}
+<p class="text-muted small">Showing latest {{ txns|length }} matching (max 500).</p>
+<table class="table table-sm table-hover">
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Character</th>
+            <th>Item</th>
+            <th></th>
+            <th class="text-end">Qty</th>
+            <th class="text-end">Unit Price</th>
+            <th class="text-end">Total ISK</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for t in txns %}
+        <tr>
+            <td>{{ t["date"].strftime("%Y-%m-%d %H:%M") }}</td>
+            <td>{{ t["character"] }}</td>
+            <td>{{ t["item"] }}</td>
+            <td>
+                {% if t["is_buy"] %}
+                <span class="badge-buy">BUY</span>
+                {% else %}
+                <span class="badge-sell">SELL</span>
+                {% endif %}
+            </td>
+            <td class="text-end">{{ "{:,}".format(t["qty"]) }}</td>
+            <td class="text-end">{{ "{:,.2f}".format(t["unit_price"]) }}</td>
+            <td class="text-end">{{ "{:,.0f}".format(t["total"]) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="mt-4 text-muted">No transactions match. Have you synced yet? (&#x21bb; on the dashboard)</p>
+{% endif %}
+
+{% endblock %}

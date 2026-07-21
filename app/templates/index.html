@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>EVE Industry Toolbox</h1>
+
+{% if character %}
+<p>logged in as: <strong>{{ character.character_name }}</strong>
+<a href="/transactions/sync" class="btn btn-outline-secondary btn-sm ms-2" title="Sync Transactions">&#x21bb;</a>
+<a href="/login" class="btn btn-outline-secondary btn-sm ms-2">+ Add Character</a>
+</p>
+
+<div class="mb-3">
+    <label class="form-label mb-2">Filter by Period</label>
+    <div>
+        <a href="/?period=7d" class="btn btn-sm {% if period == '7d' %}btn-primary{% else %}btn-outline-light{% endif %} me-2">Last 7 days</a>
+        <a href="/?period=30d" class="btn btn-sm {% if period == '30d' %}btn-primary{% else %}btn-outline-light{% endif %} me-2">Last 30 days</a>
+        <a href="/?period=90d" class="btn btn-sm {% if period == '90d' %}btn-primary{% else %}btn-outline-light{% endif %} me-2">Last 90 days</a>
+        <a href="/?period=all" class="btn btn-sm {% if period == 'all' %}btn-primary{% else %}btn-outline-light{% endif %}">All time</a>
+    </div>
+    <div class="text-muted small mt-2">Currently showing: <strong>{{ period_label }}</strong></div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-4">
+        <div class="card text-white bg-danger">
+            <div class="card-body">
+                <h6 class="card-title">Total Spent</h6>
+                <p class="card-text fs-5">{{ "{:,.0f}".format(total_spent) }} ISK</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card text-white bg-success">
+            <div class="card-body">
+                <h6 class="card-title">Total Earned</h6>
+                <p class="card-text fs-5">{{ "{:,.0f}".format(total_earned) }} ISK</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card tooltip-host {% if profit >= 0 %}text-white bg-primary{% else %}text-dark bg-warning{% endif %}">
+            <div class="card-body">
+                <h6 class="card-title">Profit (After Tax)</h6>
+                <p class="card-text fs-5">{{ "{:,.0f}".format(profit) }} ISK</p>
+            </div>
+            <div class="hover-tip">Taxes paid: {{ "{:,.0f}".format(total_taxes) }} ISK</div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-6">
+        <h5>Taxes &amp; Fees</h5>
+        <div class="card">
+            <div class="card-body py-2">
+                <table class="table table-sm mb-0">
+                    <tbody>
+                        {% for fee in tax_breakdown %}
+                        <tr>
+                            <td>{{ fee["label"] }}</td>
+                            <td class="text-end">{{ "{:,.0f}".format(fee["amount"]) }}</td>
+                        </tr>
+                        {% endfor %}
+                        <tr class="fw-bold">
+                            <td>Total Taxes &amp; Fees</td>
+                            <td class="text-end">{{ "{:,.0f}".format(total_taxes) }}</td>
+                        </tr>
+                        <tr class="fw-bold">
+                            <td>Spent incl. Taxes</td>
+                            <td class="text-end">{{ "{:,.0f}".format(spent_with_taxes) }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <h5>Characters</h5>
+        <table class="table table-sm">
+            <thead>
+                <tr>
+                    <th>Character</th>
+                    <th class="text-end">Spent</th>
+                    <th class="text-end">Earned</th>
+                    <th class="text-end">Taxes</th>
+                    <th class="text-end">Jobs</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for alt in alt_rows %}
+                <tr>
+                    <td>{{ alt["name"] }}</td>
+                    <td class="text-end">{{ "{:,.0f}".format(alt["spent"]) }}</td>
+                    <td class="text-end">{{ "{:,.0f}".format(alt["earned"]) }}</td>
+                    <td class="text-end">{{ "{:,.0f}".format(alt["taxes"]) }}</td>
+                    <td class="text-end">{{ alt["jobs"] }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-6">
+        <h5>Top Purchases</h5>
+        <table class="table table-sm">
+            <thead><tr><th>Item</th><th>Total ISK</th></tr></thead>
+            <tbody>
+                {% for item in top_buys %}
+                <tr>
+                    <td>{{ item["name"] }}</td>
+                    <td>{{ "{:,.0f}".format(item["total"]) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="col-md-6">
+        <h5>Top Sales</h5>
+        <table class="table table-sm">
+            <thead><tr><th>Item</th><th>Total ISK</th></tr></thead>
+            <tbody>
+                {% for item in top_sells %}
+                <tr>
+                    <td>{{ item["name"] }}</td>
+                    <td>{{ "{:,.0f}".format(item["total"]) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% if jobs %}
+<h5 class="mt-4">Active Jobs</h5>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Character</th>
+            <th>Product</th>
+            <th>Runs</th>
+            <th>Status</th>
+            <th>End Date</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for job in jobs %}
+        <tr>
+            <td>{{ job["character"] }}</td>
+            <td>{{ job["product"] }}</td>
+            <td>{{ job["runs"] }}</td>
+            <td>{{ job["status"] }}</td>
+            <td>{{ job["end_date"] }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% else %}
+<a href="/login" class="btn btn-primary">login with EVE</a>
+{% endif %}
+{% endblock %}
