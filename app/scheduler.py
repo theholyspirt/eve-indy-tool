@@ -1,62 +1,65 @@
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime, timezone, timedelta
-
-# Job IDs already pinged, so a job is never announced twice. Per-process: a
-# restart forgets these, but the lookback window below keeps re-pings to jobs
-# that finished within the last few minutes.
-_notified_jobs = set()
-
-
-def check_finished_jobs(app):
-    with app.app_context():
-        from app.models import Character
-        from app.routes import _fetch_character_jobs, refresh_if_expired
-        from app.sde import get_type_name
-        from app.notify import notify
-
-        now = datetime.now(timezone.utc)
-        window_start = now - timedelta(minutes=6)
-        for character in Character.query.all():
-            try:
-                character = refresh_if_expired(character)
-                raw_jobs = _fetch_character_jobs(character)
-            except Exception:
-                continue
-            if not isinstance(raw_jobs, list):
-                continue
-            for job in raw_jobs:
-                if job["job_id"] in _notified_jobs:
-                    continue
-                end = datetime.fromisoformat(job["end_date"].replace("Z", "+00:00"))
-                if window_start <= end <= now:
-                    notify(
-                        "Industry job finished",
-                        f"{get_type_name(job['product_type_id'])} x{job['runs']} "
-                        f"({character.character_name})",
-                    )
-                    _notified_jobs.add(job["job_id"])
 
 
 def sync_all_transactions(app):
     # Runs outside a request, so it needs its own app context to use the DB/session.
     with app.app_context():
         from app.models import Character
-        from app.auth import refresh_access_token
-        from app.routes import sync_character_transactions, sync_character_journal
+        from app.routes import (
+            refresh_if_expired, _snapshot, _esi_pool,
+            _fetch_raw_transactions, _fetch_raw_journal,
+            _write_transactions, _write_journal,
+        )
 
-        characters = Character.query.all()
-        for character in characters:
+        # Sequential: token refresh is a DB write, so it stays on the main
+        # thread/app-context session — matches the pattern _gather_esi uses
+        # for page loads. A dead refresh token skips that one character
+        # instead of aborting the whole sync cycle.
+        snaps = []
+        for character in Character.query.all():
             try:
-                if character.token_expiry.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
-                    character = refresh_access_token(character)
-                new_count = sync_character_transactions(character)
-                new_fees = sync_character_journal(character)
-                print(f"[scheduler] Synced {new_count} new transactions, "
-                      f"{new_fees} new fee entries for {character.character_name}")
+                snaps.append(_snapshot(refresh_if_expired(character)))
             except Exception as e:
-                # One character's failure (expired refresh token, ESI outage) shouldn't
-                # stop the rest of the loop from syncing.
-                print(f"[scheduler] Error syncing {character.character_name}: {e}")
+                print(f"[scheduler] Skipping {character.character_name}: {e}")
+        if not snaps:
+            return
+
+        # Parallel: the network-bound half, and the part that determines
+        # whether this finishes inside its 30-minute window. Sequential ESI
+        # calls do not scale to a corp of hundreds — each character costs at
+        # least two round trips (transactions + paginated journal), so 200
+        # characters sequentially can take longer than the interval between
+        # runs. The fetch is pure (no DB access) precisely so it can run here.
+        def fetch_one(snap):
+            try:
+                txns = _fetch_raw_transactions(snap)
+                txn_err = None
+            except Exception as e:
+                txns, txn_err = [], str(e)
+            try:
+                journal = _fetch_raw_journal(snap)
+                journal_err = None
+            except Exception as e:
+                journal, journal_err = [], str(e)
+            return snap, txns, journal, txn_err, journal_err
+
+        results = list(_esi_pool.map(fetch_one, snaps))
+
+        # Sequential again: writes need the request-thread's DB session, so
+        # they happen back on the main thread after every fetch has returned.
+        for snap, txns, journal, txn_err, journal_err in results:
+            if txn_err:
+                print(f"[scheduler] Error fetching transactions for {snap.character_name}: {txn_err}")
+            if journal_err:
+                print(f"[scheduler] Error fetching journal for {snap.character_name}: {journal_err}")
+            try:
+                new_count = _write_transactions(snap.character_id, txns)
+                new_fees = _write_journal(snap.character_id, journal)
+                print(f"[scheduler] Synced {new_count} new transactions, "
+                      f"{new_fees} new fee entries for {snap.character_name}")
+            except Exception as e:
+                # One character's write failure shouldn't lose the rest of the batch.
+                print(f"[scheduler] Error writing sync results for {snap.character_name}: {e}")
 
 
 def start_scheduler(app):
@@ -71,16 +74,6 @@ def start_scheduler(app):
         trigger="interval",
         minutes=30,
         id="sync_transactions",
-        replace_existing=True,
-    )
-    # Tighter interval than the sync so a finished job is announced within
-    # ~5 minutes; the ESI jobs response is cached, so this stays cheap.
-    scheduler.add_job(
-        func=check_finished_jobs,
-        args=[app],
-        trigger="interval",
-        minutes=5,
-        id="job_alerts",
         replace_existing=True,
     )
     scheduler.start()

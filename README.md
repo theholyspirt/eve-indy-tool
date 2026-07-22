@@ -112,8 +112,7 @@ eve_indy/
     ├── auth.py            # EVE SSO OAuth2 login/logout/token refresh
     ├── routes.py          # page routes and ESI helpers
     ├── sde.py             # EVE SDE lookups with in-memory caching
-    ├── scheduler.py       # background auto-sync + job-alert jobs (APScheduler)
-    ├── notify.py          # Ntfy push notifications
+    ├── scheduler.py       # background auto-sync job (APScheduler)
     └── templates/
         ├── base.html
         ├── index.html
@@ -161,10 +160,10 @@ All of these are documented in [`.env.example`](.env.example).
 
 ## Transaction sync
 
-Transactions are pulled from the ESI wallet endpoint and stored locally in SQLite.
+Transactions are pulled from the ESI wallet endpoint and stored locally (SQLite in standalone mode, PostgreSQL in the corp deployment — see [Production checklist](#production-checklist)).
 
-- **Auto-sync** runs every 30 minutes in the background — you'll see log output in the terminal
-- **Manual sync** — visit `/transactions/sync` any time to force an immediate sync
+- **Auto-sync** runs every 30 minutes in the background — you'll see log output in the terminal. Characters are fetched from ESI in parallel (token refresh stays sequential), so this scales to a full corp roster rather than one alt at a time
+- **Manual sync** — POST to `/transactions/sync` (a button on the dashboard) to force an immediate sync of your own characters
 - ESI only returns the last 2,500 transactions — sync regularly to avoid gaps in your history
 
 ---

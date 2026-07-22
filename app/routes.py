@@ -164,10 +164,6 @@ def get_hub_prices(type_ids, hub="jita"):
     return out
 
 
-def get_jita_prices(type_ids):
-    return get_hub_prices(type_ids, "jita")
-
-
 def compute_build_plan(mats, me, runs, inv, prices, product_id, qty_per_run):
     # Pure math, no I/O — deliberately, so it can be tested with fixed inputs.
     # Per material: EVE's exact need at this ME, what's on hand across all
@@ -339,6 +335,28 @@ def get_current_user():
     return user
 
 
+@main.before_request
+def _require_corp_identity():
+    # Scoped to the `main` blueprint only — /login, /callback, /logout live on
+    # the separate `auth` blueprint and are untouched by this, so EVE SSO
+    # linking still works for a visitor who has no corp identity yet.
+    #
+    # In local mode this is a no-op: get_current_user() always resolves to the
+    # bootstrap admin, so the check below never blocks. In corp mode, an
+    # unresolved identity used to mean every main-blueprint page rendered its
+    # empty-state shell — technically correct (fail-closed, nothing leaked)
+    # but reads as "is this broken?" to a real visitor. This renders an
+    # honest "sign in" page with a link to integration.login_url() instead —
+    # still no data touched, since it runs before the route body.
+    from app import integration
+
+    if integration.integration_mode() != "corp":
+        return None
+    if get_current_user() is not None:
+        return None
+    return render_template("signed_out.html", login_url=integration.login_url()), 200
+
+
 def owned_characters(user=None):
     """Every Character the current user is allowed to see.
 
@@ -457,7 +475,11 @@ def get_character():
     return character
 
 
-def sync_character_transactions(character):
+def _fetch_raw_transactions(character):
+    # Pure ESI fetch, no DB access — split out from the write step so the
+    # scheduler can run this for many characters in parallel (see
+    # scheduler.sync_all_transactions) while DB writes stay sequential in the
+    # main thread/app context, matching the pattern _gather_esi already uses.
     # ESI only returns the most recent 2,500 transactions with no further pagination,
     # so this can silently miss older ones if it isn't run often enough (see scheduler.py).
     headers = {"Authorization": f"Bearer {character.access_token}"}
@@ -468,15 +490,15 @@ def sync_character_transactions(character):
         timeout=30,
     )
     transactions = response.json()
+    return transactions if isinstance(transactions, list) else []
 
-    if not isinstance(transactions, list):
-        return 0
 
+def _write_transactions(character_id, transactions):
     # Dedupe against what's already stored rather than relying solely on the
     # DB unique constraint, so a partial batch failure doesn't roll back everything.
     existing_ids = {
         row[0] for row in db.session.query(Transaction.transaction_id)
-        .filter_by(character_id=character.character_id).all()
+        .filter_by(character_id=character_id).all()
     }
 
     new_count = 0
@@ -484,7 +506,7 @@ def sync_character_transactions(character):
         if t["transaction_id"] in existing_ids:
             continue
         db.session.add(Transaction(
-            character_id=character.character_id,
+            character_id=character_id,
             transaction_id=t["transaction_id"],
             date=datetime.fromisoformat(t["date"].replace("Z", "+00:00")),
             type_id=t["type_id"],
@@ -498,14 +520,25 @@ def sync_character_transactions(character):
     return new_count
 
 
-def sync_character_journal(character):
-    # Wallet journal is paginated (unlike transactions) and only covers ~30 days.
-    # Only fee/tax rows are stored — see FEE_REF_TYPES.
-    entries = fetch_esi_pages(character, "wallet/journal/")
+def sync_character_transactions(character):
+    # Fetch-then-write for ONE character — used by the manual /transactions/sync
+    # route, where a single alt at a time is fine. The scheduler uses the split
+    # _fetch_raw_transactions/_write_transactions pair instead, so it can
+    # parallelize the network part across hundreds of characters.
+    return _write_transactions(character.character_id, _fetch_raw_transactions(character))
 
+
+def _fetch_raw_journal(character):
+    # Pure ESI fetch, no DB access — see _fetch_raw_transactions above.
+    # Wallet journal is paginated (unlike transactions) and only covers ~30 days.
+    return fetch_esi_pages(character, "wallet/journal/")
+
+
+def _write_journal(character_id, entries):
+    # Only fee/tax rows are stored — see FEE_REF_TYPES.
     existing_ids = {
         row[0] for row in db.session.query(JournalEntry.journal_id)
-        .filter_by(character_id=character.character_id).all()
+        .filter_by(character_id=character_id).all()
     }
 
     new_count = 0
@@ -518,7 +551,7 @@ def sync_character_journal(character):
         if amount is None:
             continue
         db.session.add(JournalEntry(
-            character_id=character.character_id,
+            character_id=character_id,
             journal_id=e["id"],
             date=datetime.fromisoformat(e["date"].replace("Z", "+00:00")),
             ref_type=e["ref_type"],
@@ -528,6 +561,11 @@ def sync_character_journal(character):
 
     db.session.commit()
     return new_count
+
+
+def sync_character_journal(character):
+    # See sync_character_transactions above — same fetch/write split story.
+    return _write_journal(character.character_id, _fetch_raw_journal(character))
 
 
 # Characters whose token refresh recently failed get a 10-minute backoff —
@@ -1231,25 +1269,11 @@ def transactions():
     )
 
 
-@main.route("/notify/test", methods=["POST"])
-def notify_test():
-    # POST: sends a push — a GET with side effects can be triggered by any
-    # page that embeds the URL (<img src=...>), and CSRF only guards POSTs.
-    character = get_character()
-    if not character:
-        return redirect(url_for("main.index"))
-    from app.notify import notify
-    sent = notify("EVE Industry Toolbox", "Test notification — Ntfy is wired up.")
-    if sent:
-        return "Notification sent — check your devices."
-    return ("NTFY_TOPIC is not set in .env (or the push failed). "
-            "Add NTFY_TOPIC=<your-topic-name> and restart."), 200
-
-
 @main.route("/transactions/sync", methods=["POST"])
 def sync_transactions():
-    # POST for the same reason as /notify/test: it writes to the DB and burns
-    # ESI calls, so it must not be triggerable by embedding a URL in a page.
+    # POST: this writes to the DB and burns ESI calls, so it must not be
+    # triggerable by embedding the URL in a page (<img src=...>) — a GET
+    # with side effects has no CSRF protection, POST does.
     character = get_character()
     if not character:
         return redirect(url_for("main.index"))

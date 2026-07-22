@@ -17,18 +17,6 @@ _industry_output_cache = {}
 _products_cache = {}
 
 
-def clear_caches():
-    # Called after eve.db is replaced with a fresh SDE download, so stale
-    # names/categories/materials from the old file aren't served forever.
-    _name_cache.clear()
-    _category_cache.clear()
-    _materials_cache.clear()
-    _industry_input_cache.clear()
-    _industry_output_cache.clear()
-    _products_cache.clear()
-    get_type_name.cache_clear()
-
-
 @lru_cache(maxsize=None)
 def get_type_name(type_id):
     db = sqlite3.connect(SDE_PATH)

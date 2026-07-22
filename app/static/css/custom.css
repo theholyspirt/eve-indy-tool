@@ -182,11 +182,6 @@ body {
     border-color: var(--border);
 }
 
-.table-striped > tbody > tr:nth-of-type(odd) > * {
-    background-color: rgba(255, 255, 255, 0.02);
-    color: var(--text);
-}
-
 .table-hover > tbody > tr:hover > * {
     background-color: rgba(62, 207, 255, 0.06);
     color: var(--text);

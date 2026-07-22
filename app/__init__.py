@@ -23,7 +23,26 @@ def create_app():
         raise RuntimeError("SECRET_KEY is not set in the environment (.env)")
     app.config["SECRET_KEY"] = secret_key
     # Falls back to local SQLite; set DATABASE_URL in production to point at Postgres.
-    app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///eve_indy.db")
+    database_url = os.getenv("DATABASE_URL", "sqlite:///eve_indy.db")
+    app.config["SQLALCHEMY_DATABASE_URI"] = database_url
+    if not database_url.startswith("sqlite"):
+        # Postgres-only pool tuning — SQLite is a single file with no server-side
+        # connection concept, so these options don't apply and aren't set for it.
+        #   pool_pre_ping — tests each connection with a cheap query before use.
+        #     Without it, a connection Postgres (or a proxy in front of it) closed
+        #     after sitting idle surfaces as a random mid-request crash instead of
+        #     a transparent reconnect.
+        #   pool_recycle — recycle connections before they go stale server-side;
+        #     most managed Postgres instances close idle connections around 5-10
+        #     minutes, so cycling every 4 stays ahead of that.
+        #   pool_size / max_overflow — sized for hundreds of corp members hitting
+        #     a background scheduler plus regular page traffic concurrently.
+        app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+            "pool_pre_ping": True,
+            "pool_recycle": 240,
+            "pool_size": int(os.getenv("DB_POOL_SIZE", "10")),
+            "max_overflow": int(os.getenv("DB_MAX_OVERFLOW", "20")),
+        }
     app.config["SESSION_TYPE"] = "sqlalchemy"
     app.config["SESSION_SQLALCHEMY"] = db
     # Stay signed in across browser restarts — the EVE tokens live in the DB
@@ -213,9 +232,12 @@ def create_app():
         _migrate_stock_limit_per_user()
         _migrate_encrypt_tokens()
         # Speeds up the dashboard's per-character, per-type_id aggregate queries.
+        # Double-quoted identifier (ANSI standard, works on SQLite AND Postgres)
+        # — a single-quoted 'transaction' is a STRING LITERAL in Postgres, not
+        # a table name, and this statement would fail outright there.
         with db.engine.connect() as conn:
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_txn_character ON 'transaction' (character_id)"))
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_txn_type ON 'transaction' (type_id)"))
+            conn.execute(text('CREATE INDEX IF NOT EXISTS idx_txn_character ON "transaction" (character_id)'))
+            conn.execute(text('CREATE INDEX IF NOT EXISTS idx_txn_type ON "transaction" (type_id)'))
             conn.commit()
 
     # RUN_SCHEDULER must be set to "false" on every worker except one when running

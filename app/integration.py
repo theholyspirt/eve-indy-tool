@@ -32,12 +32,14 @@ a safe default; fill them in and the whole app starts working per-user.
  FAIL-SAFE BEHAVIOUR
 -------------------------------------------------------------------------------
    In corp mode, returning None from resolve_current_identity() means "not
-   signed in", and the app shows NOTHING. Every data query is scoped by the
-   resolved user, and an unresolved user owns no characters.
+   signed in". Every main-blueprint page then shows a "Sign in" page linking
+   to login_url() (see _require_corp_identity in app/routes.py) instead of
+   running the page at all -- no query for anyone's data ever executes.
 
-   So an unimplemented or broken integration fails CLOSED (blank pages), never
-   OPEN (everyone's data). If you see empty pages, this function is returning
-   None -- that is the safety net doing its job, not a bug in the tool.
+   So an unimplemented or broken integration fails CLOSED (a sign-in prompt),
+   never OPEN (someone else's data). If every page sends you to "Sign in" no
+   matter what, this function is returning None -- that is the safety net
+   doing its job, not a bug in the tool.
 ===============================================================================
 """
 import os
@@ -116,7 +118,14 @@ def resolve_current_identity():
 # 2. IMPLEMENT ME  --  where to send signed-out visitors
 # =============================================================================
 def login_url():
-    """URL of your site's login page. Used to redirect signed-out visitors."""
+    """URL of your site's login page.
+
+    In corp mode, a visitor resolve_current_identity() can't identify sees a
+    "Sign in" page (app/templates/signed_out.html, wired in app/routes.py's
+    _require_corp_identity) linking here — instead of the empty-state pages
+    they'd otherwise see on every route. Set CORP_LOGIN_URL, or return
+    something else here directly.
+    """
     return os.getenv("CORP_LOGIN_URL", "/")
 
 
