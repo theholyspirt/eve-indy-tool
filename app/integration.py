@@ -12,11 +12,29 @@ needs changing. Each function marked "IMPLEMENT ME" is a placeholder returning
 a safe default; fill them in and the whole app starts working per-user.
 
 -------------------------------------------------------------------------------
- WHAT YOU MUST IMPLEMENT
+ WHAT'S ALREADY DONE vs. WHAT YOU STILL NEED TO DO
 -------------------------------------------------------------------------------
-   1. resolve_current_identity()  -- who is making this request  (REQUIRED)
-   2. login_url()                 -- where to send signed-out visitors
-   3. logout_url()                -- where your "log out" lives
+   resolve_current_identity() below is already wired for tblds.space's real
+   auth model: it reads the "siteAuth" cookie the site's own main.js sets,
+   verifies it's a genuine JWT from that site (not just decodes it -- an
+   unverified token is the same as no auth at all), and pulls your account id
+   + rank out of it. You should NOT need to touch the code.
+
+   All that's left is data only the tblds.space backend has:
+
+   1. Set SITE_AUTH_SECRET in .env to whatever secret tblds.space's backend
+      passes to jsonwebtoken.sign(...) when it creates the "siteAuth" cookie
+      (look in its backend/src/routes/auth.js). If it signs with something
+      other than HS256, set SITE_AUTH_ALG too.
+   2. Double check the two claim-name constants just below
+      (SITE_AUTH_EXTERNAL_ID_CLAIM / SITE_AUTH_ROLES_CLAIM) match what's
+      actually in that JWT's payload. They're a best guess from reading
+      tblds.space's public JS -- if login doesn't work, this is the first
+      place to look.
+   3. Set INTEGRATION_MODE=corp in .env.
+
+   login_url() / logout_url() below already default to "/" (tblds.space's
+   homepage has its own login button) -- only touch these if that's wrong.
 
 -------------------------------------------------------------------------------
  HOW TO SWITCH IT ON
@@ -44,6 +62,9 @@ a safe default; fill them in and the whole app starts working per-user.
 """
 import os
 
+import jwt
+from flask import request
+
 # Which of YOUR rank names count as admin. Comma-separated, case-insensitive.
 # Admins see corp-wide data; everyone else sees only their own characters.
 # Anything not in this list is treated as a regular member -- deny by default,
@@ -54,13 +75,28 @@ ADMIN_ROLES = {
     if r.strip()
 }
 
+# Name of tblds.space's session cookie (set by its own main.js, readable
+# here because it's not HttpOnly -- the site's own JS reads it too).
+SITE_AUTH_COOKIE = "siteAuth"
+
+# Claim in that JWT holding the stable per-ACCOUNT id (not per-character --
+# an account can have multiple linked EVE characters). Best guess from
+# reading tblds.space's public JS; confirm against backend/src/routes/auth.js
+# and change here if it's named something else.
+SITE_AUTH_EXTERNAL_ID_CLAIM = "sub"
+
+# Claim holding the account's rank names, as a list of strings (tblds.space's
+# own HR-access check reads a "roles" array the same way). Confirm this one
+# too -- change here if it's named something else.
+SITE_AUTH_ROLES_CLAIM = "roles"
+
 
 def integration_mode():
     return os.getenv("INTEGRATION_MODE", "local").strip().lower()
 
 
 # =============================================================================
-# 1. IMPLEMENT ME  --  REQUIRED
+# 1. DONE -- just needs SITE_AUTH_SECRET set in .env (see module docstring)
 # =============================================================================
 def resolve_current_identity():
     """Work out which of YOUR users is making this HTTP request.
@@ -82,36 +118,49 @@ def resolve_current_identity():
     values are treated as a regular member.
 
     -------------------------------------------------------------------------
-    TYPICAL IMPLEMENTATION -- reading your site's session cookie:
+    ALREADY IMPLEMENTED for tblds.space's real auth: it signs a JWT into a
+    "siteAuth" cookie (not a session table), so this verifies that JWT
+    (never trust one without checking its signature -- that's the same as no
+    auth at all) and pulls external_id/role out of its claims. See the
+    module docstring at the top of this file for what's still needed:
+    SITE_AUTH_SECRET in .env, and confirming SITE_AUTH_EXTERNAL_ID_CLAIM /
+    SITE_AUTH_ROLES_CLAIM above actually match tblds.space's JWT payload.
 
-        from flask import request
-        import your_db
-
-        def resolve_current_identity():
-            token = request.cookies.get("YOUR_SESSION_COOKIE_NAME")
-            if not token:
-                return None
-            row = your_db.query_one(
-                "SELECT u.id, u.rank "
-                "FROM sessions s JOIN users u ON u.id = s.user_id "
-                "WHERE s.token = %s AND s.expires_at > NOW()",
-                (token,),
-            )
-            if not row:
-                return None
-            return {"external_id": str(row["id"]), "role": row["rank"]}
-
-    NOTE: validate the session (exists AND not expired). Trusting a cookie
-    without checking it against your store is the same as no auth at all.
-
-    If you instead put this app behind a reverse proxy that injects an
-    authenticated header, read that header here -- but make sure the app is
-    NOT reachable except through that proxy, or anyone can set the header
-    themselves.
+    If this app is ever pointed at a *different* host site that uses a
+    plain session cookie + DB table instead of a JWT, that's a different
+    shape -- look up "session token" auth pattern rather than reusing this.
     -------------------------------------------------------------------------
     """
-    # PLACEHOLDER -- returns None, so corp mode shows nothing until implemented.
-    return None
+    secret = os.getenv("SITE_AUTH_SECRET")
+    if not secret:
+        # Not configured yet -- fail closed (nobody's signed in) rather than
+        # trusting an unverified cookie.
+        return None
+
+    token = request.cookies.get(SITE_AUTH_COOKIE)
+    if not token:
+        return None
+
+    try:
+        payload = jwt.decode(token, secret, algorithms=[os.getenv("SITE_AUTH_ALG", "HS256")])
+    except jwt.PyJWTError:
+        # Bad signature, expired, malformed -- all treated as "not signed in".
+        return None
+
+    external_id = payload.get(SITE_AUTH_EXTERNAL_ID_CLAIM)
+    if not external_id:
+        return None
+
+    roles = payload.get(SITE_AUTH_ROLES_CLAIM) or []
+    if isinstance(roles, str):
+        roles = [roles]
+    # Prefer whichever role actually grants admin, so multi-rank accounts
+    # (e.g. ["member", "hr"]) still come through as admin.
+    role = next((r for r in roles if str(r).strip().lower() in ADMIN_ROLES), None)
+    if role is None:
+        role = roles[0] if roles else "member"
+
+    return {"external_id": str(external_id), "role": role}
 
 
 # =============================================================================
