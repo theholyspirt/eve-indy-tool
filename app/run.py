@@ -11,4 +11,15 @@ if __name__ == "__main__":
     # set FLASK_HOST=0.0.0.0 to accept LAN connections, while local dev keeps the
     # "localhost" default — without this being a per-deployment code edit that a
     # future `git pull` would silently revert.
-    app.run(host=os.getenv("FLASK_HOST", "localhost"), debug=os.getenv("FLASK_DEBUG", "false").lower() == "true")
+    debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"
+    host = os.getenv("FLASK_HOST", "localhost")
+    # Fail loudly rather than silently expose Werkzeug's interactive, code-executing
+    # debugger console to the network — it must only ever be reachable from the same
+    # machine, never combined with a LAN/public-facing bind address.
+    if debug and host not in ("localhost", "127.0.0.1"):
+        raise RuntimeError(
+            f"Refusing to start: FLASK_DEBUG=true with FLASK_HOST={host!r} would "
+            "expose the interactive debugger to the network. Set FLASK_DEBUG=false "
+            "for any host other than localhost/127.0.0.1."
+        )
+    app.run(host=host, debug=debug)
