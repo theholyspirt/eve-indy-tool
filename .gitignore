@@ -1,0 +1,15 @@
+venv/
+.env
+__pycache__/
+*.pyc
+test_esi.py
+check_sde.py
+CLAUDE.md
+settings.json
+eve.db
+instance/
+*.db
+.claude/
+test_build_math.py
+tests
+
