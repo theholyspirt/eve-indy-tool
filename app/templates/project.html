@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% block content %}
+<a href="{{ url_for('main.industry') }}" class="small">&larr; Industry</a>
+<div class="d-flex flex-wrap justify-content-between align-items-end gap-3 mt-1">
+    <div>
+        <h1 class="mb-0">{{ name }}</h1>
+        <p class="text-muted mb-0">Pinned build &middot; {{ "{:,}".format(view.qty) }} unit{{ "s" if view.qty != 1 }}</p>
+    </div>
+    <div class="d-flex gap-2 align-items-end">
+        <form method="POST" action="{{ url_for('main.project_set_runs', project_id=project.id) }}" class="d-flex gap-1 align-items-end">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label class="small text-muted">Runs
+                <input type="number" name="runs" min="1" max="10000" value="{{ project.runs }}" class="form-control form-control-sm runs-input">
+            </label>
+            <button class="btn btn-outline-secondary btn-sm" type="submit">Update</button>
+        </form>
+        <form method="POST" action="{{ url_for('main.project_delete', project_id=project.id) }}"
+              onsubmit="return confirm('Unpin this build?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-outline-danger btn-sm" type="submit">Unpin</button>
+        </form>
+    </div>
+</div>
+
+{% if price_error %}
+<div class="alert alert-warning mt-3">{{ price_error }}</div>
+{% elif view.missing_prices %}
+<div class="alert alert-warning mt-3">Some items have no Jita sell orders — they're counted as 0 ISK, so treat totals as incomplete.</div>
+{% endif %}
+
+<div class="pin-bar pin-bar-lg mt-3"><span style="width: {{ '%.0f'|format(view.progress) }}%"></span></div>
+<p class="small text-muted mt-1">{{ "%.0f"|format(view.progress) }}% of the raw-material bill already covered by stock and components in hangars or in production (all alts).</p>
+
+<div class="row g-3 mt-1">
+    <div class="col-6 col-md-3">
+        <div class="card bg-danger"><div class="card-body">
+            <h6 class="card-title">Still to buy</h6>
+            <p class="card-text fs-6 mb-0">{{ "{:,.0f}".format(view.missing_cost) }} ISK</p>
+        </div></div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card"><div class="card-body">
+            <h6 class="card-title">Full material bill</h6>
+            <p class="card-text fs-6 mb-0">{{ "{:,.0f}".format(view.total_cost) }} ISK</p>
+        </div></div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card bg-success"><div class="card-body">
+            <h6 class="card-title">Jita sell value</h6>
+            <p class="card-text fs-6 mb-0">{{ "{:,.0f}".format(view.revenue) }} ISK</p>
+        </div></div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card {% if view.profit >= 0 %}bg-primary{% else %}bg-warning{% endif %}"><div class="card-body">
+            <h6 class="card-title">Profit</h6>
+            <p class="card-text fs-6 mb-0">{{ "{:,.0f}".format(view.profit) }} ISK</p>
+        </div></div>
+    </div>
+</div>
+<p class="small text-muted mt-2">Jita sell prices, pre-tax, no job install costs or structure bonuses (assumes NPC-station material use).</p>
+
+<div class="row g-4 mt-1">
+    <div class="col-lg-7">
+        <h2 class="h5">Build</h2>
+        <table class="table table-sm table-hover">
+            <thead>
+                <tr>
+                    <th>Item</th>
+                    <th class="text-end">Need</th>
+                    <th class="text-end" title="In hangars / on the production line">Have</th>
+                    <th class="text-end">Runs to start</th>
+                    <th class="text-end">ME</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for tier in view.tree.build|groupby("depth") %}
+                <tr class="tier-row"><td colspan="5">
+                    {% if tier.grouper == 0 %}Final product{% else %}Tier {{ tier.grouper }} components{% endif %}
+                </td></tr>
+                {% for b in tier.list %}
+                <tr class="{% if b.runs == 0 %}text-muted{% endif %}">
+                    <td>{% if b.runs == 0 %}✓ {% endif %}{{ b.name }}</td>
+                    <td class="text-end">{{ "{:,}".format(b.need) }}</td>
+                    <td class="text-end">
+                        {% if b.depth == 0 %}—{% else %}
+                        {{ "{:,}".format(b.in_hangar) }}{% if b.in_jobs %} <span class="small text-muted">+{{ "{:,}".format(b.in_jobs) }} building</span>{% endif %}
+                        {% endif %}
+                    </td>
+                    <td class="text-end">{{ "{:,}".format(b.runs) }}</td>
+                    <td class="text-end">
+                        {% if b.bp_owned %}{{ b.me }}{% else %}<span class="text-warning" title="No print owned — assuming ME {{ default_me }}">{{ b.me }}*</span>{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% endfor %}
+            </tbody>
+        </table>
+        {% if view.unowned_bps %}
+        <p class="small text-warning">* No print owned by any of your characters — ME {{ default_me }} assumed.</p>
+        {% endif %}
+    </div>
+
+    <div class="col-lg-5">
+        <div class="d-flex justify-content-between align-items-center">
+            <h2 class="h5 mb-0">Buy</h2>
+            <button id="copy-buy" class="btn btn-outline-secondary btn-sm">Copy shopping list</button>
+        </div>
+        <table class="table table-sm table-hover mt-2">
+            <thead>
+                <tr>
+                    <th>Material</th>
+                    <th class="text-end">Need</th>
+                    <th class="text-end">Have</th>
+                    <th class="text-end">Missing</th>
+                    <th class="text-end">Cost</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for m in view.tree.buy %}
+                <tr>
+                    <td>{{ m.name }}</td>
+                    <td class="text-end">{{ "{:,}".format(m.need) }}</td>
+                    <td class="text-end">{{ "{:,}".format(m.have) }}</td>
+                    <td class="text-end {% if m.missing %}stock-low{% endif %}">{{ "{:,}".format(m.missing) }}</td>
+                    <td class="text-end">{{ "{:,.0f}".format(m.missing * m.price) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="text-muted">Nothing left to buy.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+// Tab-separated "Name<TAB>qty" lines paste straight into EVE's multibuy.
+const SHOPPING = {{ view.tree.buy | selectattr("missing") | map(attribute="name") | list | tojson }};
+const SHOPPING_QTY = {{ view.tree.buy | selectattr("missing") | map(attribute="missing") | list | tojson }};
+document.getElementById("copy-buy").addEventListener("click", e => {
+    navigator.clipboard.writeText(SHOPPING.map((n, i) => `${n}\t${SHOPPING_QTY[i]}`).join("\n"));
+    e.target.textContent = SHOPPING.length ? "Copied!" : "Nothing to buy";
+});
+</script>
+{% endblock %}

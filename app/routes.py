@@ -1,5 +1,7 @@
 from flask import Blueprint, render_template, session, redirect, url_for, request, abort
-from app.models import Character, Transaction, JournalEntry, StockLimit, AccessAttempt
+from app.models import (
+    Character, Transaction, JournalEntry, StockLimit, AccessAttempt, BuildProject,
+)
 from app import db
 from collections import defaultdict
 from app.sde import (
@@ -8,6 +10,7 @@ from app.sde import (
     get_item_categories,
     get_blueprint_materials,
     get_blueprint_products,
+    get_product_blueprints,
     get_industry_input_ids,
     get_industry_output_ids,
     search_type_ids,
@@ -213,6 +216,94 @@ def compute_build_plan(mats, me, runs, inv, prices, product_id, qty_per_run):
         "margin": (profit / material_cost * 100) if material_cost else None,
         "missing_prices": missing_prices,
     }
+
+
+# ME assumed for a component print nobody in the operation owns. Flagged on
+# the project page so it's never silently wrong; component BPOs are normally
+# researched to 10 before anyone builds capitals with them.
+DEFAULT_COMPONENT_ME = 10
+
+
+def _need(runs, base_qty, me):
+    # EVE's exact batch material need — see _max_runs_for_material.
+    return max(runs, (runs * base_qty * (100 - me) + 99) // 100)
+
+
+def expand_build_tree(root_product_id, root_runs, recipes, me_for, have):
+    # Pure function (no I/O) — walks a build down to raw materials.
+    #   recipes: {product_id: {"bp_id", "qty_per_run", "mats": [{material_id, qty}]}}
+    #            anything NOT in recipes is bought (minerals, PI, moon goo...)
+    #   me_for:  {bp_id: best owned ME}; missing -> DEFAULT_COMPONENT_ME
+    #   have:    {type_id: qty on hand or already in production}
+    #
+    # Why ordered by depth instead of plain recursion: the same component can
+    # be needed by several parents (Capital Armor Plates feed a hull AND other
+    # components). Its demand must be summed from ALL parents first, then run
+    # counts rounded once — per-parent recursion rounds each branch separately
+    # and over-counts. Processing every type only after everything above it
+    # (max depth from the root) guarantees its demand is complete.
+    depth = {}
+
+    def visit(tid, d):
+        if d > 30 or depth.get(tid, -1) >= d:
+            return
+        depth[tid] = d
+        rec = recipes.get(tid)
+        if rec:
+            for m in rec["mats"]:
+                visit(m["material_id"], d + 1)
+
+    visit(root_product_id, 0)
+
+    demand = defaultdict(int)
+    build, buy = [], []
+    for tid in sorted(depth, key=depth.get):
+        rec = recipes.get(tid)
+        if tid == root_product_id:
+            # The ship itself is always built in full — a finished hull already
+            # sitting in the hangar isn't progress on THIS build.
+            qty = root_runs * rec["qty_per_run"]
+            on_hand = 0
+            runs = root_runs
+        else:
+            qty = demand[tid]
+            if qty <= 0:
+                continue
+            on_hand = min(have.get(tid, 0), qty)
+            if not rec:
+                buy.append({"type_id": tid, "need": qty, "have": on_hand,
+                            "missing": qty - on_hand})
+                continue
+            runs = -(-(qty - on_hand) // rec["qty_per_run"])  # ceil division
+        me = me_for.get(rec["bp_id"], DEFAULT_COMPONENT_ME)
+        build.append({
+            "type_id": tid, "bp_id": rec["bp_id"], "need": qty, "have": on_hand,
+            "runs": runs, "me": me, "bp_owned": rec["bp_id"] in me_for,
+            "depth": depth[tid],
+        })
+        for m in rec["mats"]:
+            if runs > 0 and m["qty"] > 0:
+                demand[m["material_id"]] += _need(runs, m["qty"], me)
+    return {"build": build, "buy": buy}
+
+
+def load_recipes(root_product_id):
+    # Breadth-first walk of the SDE from the product down, one batched query
+    # per tree level, collecting a recipe for everything that can be built.
+    recipes = {}
+    seen = set()
+    frontier = {root_product_id}
+    while frontier:
+        seen |= frontier
+        bps = get_product_blueprints(frontier)
+        mats = get_blueprint_materials({b["bp_id"] for b in bps.values()})
+        nxt = set()
+        for pid, b in bps.items():
+            m = [x for x in mats.get(b["bp_id"], []) if x["qty"] > 0]
+            recipes[pid] = {**b, "mats": m}
+            nxt |= {x["material_id"] for x in m}
+        frontier = nxt - seen
+    return recipes
 
 
 # Simple in-memory ESI cache: {(character_id, key): (data, expires_at)}
@@ -875,127 +966,6 @@ def index():
         period=period, period_label=period_label)
 
 
-@main.route("/blueprints")
-def blueprints():
-    character = get_character()
-    if not character:
-        return redirect(url_for("main.index"))
-
-    all_chars, fetch_chars, sel = _selected_characters()
-    # Merged across alts: BPO/BPC counts and total runs sum naturally, and
-    # Best ME/TE becomes the best copy anyone in the operation owns.
-    raw_blueprints = _gather_esi(fetch_chars, "blueprints", "blueprints/", ttl=600)
-
-    type_ids = {bp["type_id"] for bp in raw_blueprints}
-    type_names = get_type_names(type_ids)
-
-    grouped = {}
-    for bp in raw_blueprints:
-        tid = bp["type_id"]
-        if tid not in grouped:
-            grouped[tid] = {
-                "name": type_names.get(tid, "unknown"),
-                "bpo": 0,
-                "bpc": 0,
-                "total_runs": 0,
-                "me": bp["material_efficiency"],
-                "te": bp["time_efficiency"],
-            }
-        # You can own several copies of the same print at different research
-        # levels (ME10 BPO + ME2 invented BPCs). Show the best copy's stats
-        # rather than whichever one ESI happened to list first.
-        grouped[tid]["me"] = max(grouped[tid]["me"], bp["material_efficiency"])
-        grouped[tid]["te"] = max(grouped[tid]["te"], bp["time_efficiency"])
-        # ESI represents BPOs (unlimited use) with runs = -1, so they're counted
-        # separately rather than added into total_runs, which is BPC-only.
-        if bp["runs"] == -1:
-            # A stack of N unresearched BPOs is ONE list entry with quantity=N;
-            # single researched originals have quantity=-1 and count as one.
-            grouped[tid]["bpo"] += bp["quantity"] if bp["quantity"] > 0 else 1
-        else:
-            grouped[tid]["bpc"] += 1
-            grouped[tid]["total_runs"] += bp["runs"]
-
-    return render_template(
-        "blueprints.html", character=character, blueprints=list(grouped.values()),
-        all_characters=all_chars, selected_character=sel,
-    )
-
-
-@main.route("/inventory")
-def inventory():
-    character = get_character()
-    if not character:
-        return redirect(url_for("main.index"))
-
-    all_chars, fetch_chars, sel = _selected_characters()
-    raw_assets = _gather_esi(fetch_chars, "assets", "assets/", ttl=300)
-
-    inventory = {}
-    for a in raw_assets:
-        tid = a["type_id"]
-        inventory[tid] = inventory.get(tid, 0) + a["quantity"]
-
-    # Price failure (ESI hiccup) degrades to zero-values rather than a 500 —
-    # quantities are still worth showing without valuations.
-    try:
-        prices = get_market_prices()
-    except Exception:
-        prices = {}
-
-    # Thresholds are per user — otherwise one member's limit would paint red
-    # flags across everyone else's inventory page.
-    _user = get_current_user()
-    limits = {
-        sl.type_id: sl.min_qty
-        for sl in StockLimit.query.filter_by(user_id=_user.id if _user else None).all()
-    }
-
-    item_info = get_item_categories(inventory.keys())
-    grouped = {}
-    for type_id, qty in inventory.items():
-        info = item_info.get(type_id)
-        # Items with no known SDE category (rare/unrecognized type_ids) are
-        # dropped rather than shown under an "Unknown" bucket.
-        if not info:
-            continue
-        category = info["category"]
-        if category not in grouped:
-            grouped[category] = []
-        grouped[category].append({
-            "type_id": type_id,
-            "name": info["name"],
-            "qty": qty,
-            "value": qty * prices.get(type_id, 0),
-            "limit": limits.get(type_id),
-            # "Low" compares whatever this view shows (all alts or one) against
-            # the limit — filtering to a single alt can flag items the rest of
-            # the operation still has plenty of, which is intentional.
-            "low": type_id in limits and qty < limits[type_id],
-        })
-
-    selected_categories = request.args.getlist("categories")
-    if selected_categories:
-        grouped = {k: v for k, v in grouped.items() if k in selected_categories}
-
-    # Most valuable items first within each category; totals match what's shown.
-    for items in grouped.values():
-        items.sort(key=lambda i: i["value"], reverse=True)
-    category_totals = {cat: sum(i["value"] for i in items) for cat, items in grouped.items()}
-    total_value = sum(category_totals.values())
-
-    return render_template(
-        "inventory.html",
-        character=character,
-        grouped=grouped,
-        selected_categories=selected_categories,
-        category_totals=category_totals,
-        total_value=total_value,
-        all_characters=all_chars,
-        selected_character=sel,
-    )
-
-
 def _max_runs_for_material(have, base_qty, me):
     # EVE's real material requirement for N runs of a print at ME level `me`:
     #     need(N) = max(N, ceil(N * base_qty * (100 - me) / 100))
@@ -1014,71 +984,350 @@ def _max_runs_for_material(have, base_qty, me):
     return n
 
 
+def _sum_assets(raw_assets):
+    inv = {}
+    for a in raw_assets:
+        inv[a["type_id"]] = inv.get(a["type_id"], 0) + a["quantity"]
+    return inv
+
+
+def _blueprint_summary(raw_blueprints):
+    # Per print type across every alt: best ME/TE copy (the one you'd build
+    # from), BPO count, BPC count and the BPCs' remaining runs combined.
+    summary = {}
+    for bp in raw_blueprints:
+        tid = bp["type_id"]
+        s = summary.setdefault(tid, {"me": 0, "te": 0, "bpo": 0, "bpc": 0, "bpc_runs": 0})
+        s["me"] = max(s["me"], bp["material_efficiency"])
+        s["te"] = max(s["te"], bp["time_efficiency"])
+        # ESI marks BPOs with runs = -1. A stack of N unresearched BPOs is ONE
+        # entry with quantity=N; single researched originals have quantity=-1.
+        if bp["runs"] == -1:
+            s["bpo"] += bp["quantity"] if bp["quantity"] > 0 else 1
+        else:
+            s["bpc"] += 1
+            s["bpc_runs"] += bp["runs"]
+    return summary
+
+
+def _jobs_in_production(chars):
+    # {product_type_id: units} currently being manufactured. Counted toward a
+    # pinned build's "have" — for a multi-week capital build, components on
+    # the line are progress just as much as components in the hangar.
+    raw_jobs = _gather_esi(chars, "jobs_list", "industry/jobs/", ttl=300)
+    jobs = [j for j in raw_jobs if j.get("activity_id") == 1]
+    products = get_blueprint_products({j["blueprint_type_id"] for j in jobs})
+    out = {}
+    for j in jobs:
+        p = products.get(j["blueprint_type_id"])
+        if p:
+            out[j["product_type_id"]] = out.get(j["product_type_id"], 0) + j["runs"] * p["qty_per_run"]
+    return out
+
+
+def _user_projects():
+    # Deny by default, same as owned_characters(): no user, no projects.
+    user = get_current_user()
+    if not user:
+        return []
+    return BuildProject.query.filter_by(user_id=user.id).order_by(BuildProject.created_at).all()
+
+
+def _owned_project(project_id):
+    project = db.session.get(BuildProject, project_id)
+    if not project:
+        abort(404)
+    user = get_current_user()
+    if not user or project.user_id != user.id:
+        deny_as_spy(f"touched build project {project_id} owned by user {project.user_id}")
+    return project
+
+
+def _plan_project(project, me_for, have, prices):
+    # Full breakdown of one pinned build plus progress. Progress is by value:
+    # how much of the raw-material bill is already covered, where built (or
+    # in-production) components count for everything that went into them.
+    product = get_blueprint_products({project.blueprint_type_id}).get(project.blueprint_type_id)
+    if not product:
+        return None
+    recipes = load_recipes(product["product_id"])
+    tree = expand_build_tree(product["product_id"], project.runs, recipes, me_for, have)
+    from_scratch = expand_build_tree(product["product_id"], project.runs, recipes, me_for, {})
+
+    def price(tid):
+        return (prices.get(tid) or {}).get("sell") or 0
+
+    total_cost = sum(r["need"] * price(r["type_id"]) for r in from_scratch["buy"])
+    missing_cost = sum(r["missing"] * price(r["type_id"]) for r in tree["buy"])
+    revenue = project.runs * product["qty_per_run"] * price(product["product_id"])
+    return {
+        "product_id": product["product_id"],
+        "qty": project.runs * product["qty_per_run"],
+        "tree": tree,
+        "total_cost": total_cost,
+        "missing_cost": missing_cost,
+        "revenue": revenue,
+        "profit": revenue - total_cost,
+        "progress": (1 - missing_cost / total_cost) * 100 if total_cost else 0,
+        "missing_prices": any(price(r["type_id"]) == 0 for r in tree["buy"])
+                          or price(product["product_id"]) == 0,
+        "unowned_bps": sum(1 for b in tree["build"] if not b["bp_owned"]),
+    }
+
+
+@main.route("/blueprints")
 @main.route("/build")
-def build():
+def old_blueprint_pages():
+    # Merged into /industry — keep old bookmarks working.
+    return redirect(url_for("main.industry", **request.args))
+
+
+@main.route("/inventory")
+def old_inventory_page():
+    return redirect(url_for("main.industry", tab="inventory", **request.args))
+
+
+@main.route("/industry")
+def industry():
+    # One page replacing Blueprints + Inventory + Build Readiness: every owned
+    # manufacturable print, what it can build now, what's short, a rough profit
+    # per run, the inventory, and pinned long builds. List prices are CCP
+    # averages (one ESI call for every type); live Jita order-book prices are
+    # fetched per blueprint on the calculator and project pages.
     character = get_character()
     if not character:
         return redirect(url_for("main.index"))
 
     all_chars, fetch_chars, sel = _selected_characters()
-    # Whole-operation readiness: any alt's prints vs everyone's combined
-    # materials. (Materials may still need hauling to one place, of course.)
     raw_blueprints = _gather_esi(fetch_chars, "blueprints", "blueprints/", ttl=600)
-    raw_assets = _gather_esi(fetch_chars, "assets", "assets/", ttl=300)
+    inv = _sum_assets(_gather_esi(fetch_chars, "assets", "assets/", ttl=300))
+    summary = _blueprint_summary(raw_blueprints)
 
-    inv = {}
-    for a in raw_assets:
-        inv[a["type_id"]] = inv.get(a["type_id"], 0) + a["quantity"]
+    products = get_blueprint_products(summary.keys())
+    materials = get_blueprint_materials(summary.keys())
+    names = get_type_names(
+        set(summary)
+        | {p["product_id"] for p in products.values()}
+        | {m["material_id"] for mats in materials.values() for m in mats}
+    )
 
-    # Per print type: the best ME copy owned (that's the copy you'd build from),
-    # and how many runs the owned prints can actually start — BPCs are limited
-    # by their remaining runs; any BPO (runs == -1) means unlimited.
-    best_me = {}
-    print_runs = {}
-    has_bpo = set()
-    for bp in raw_blueprints:
-        tid = bp["type_id"]
-        best_me[tid] = max(best_me.get(tid, 0), bp["material_efficiency"])
-        if bp["runs"] == -1:
-            has_bpo.add(tid)
-        else:
-            print_runs[tid] = print_runs.get(tid, 0) + bp["runs"]
+    # Price failure (ESI hiccup) degrades to "—" rather than a 500.
+    try:
+        avg = get_market_prices()
+    except Exception:
+        avg = {}
+    # compute_build_plan expects the hub-price shape {type_id: {"sell": x}}.
+    prices = {tid: {"sell": p} for tid, p in avg.items()}
 
-    bp_type_ids = set(best_me)
-    type_names = get_type_names(bp_type_ids)
-    materials = get_blueprint_materials(bp_type_ids)
-
-    buildable = []
-    for tid in bp_type_ids:
-        mats = materials.get(tid)
-        if not mats:
+    rows = []
+    used_by = defaultdict(list)
+    for tid, s in summary.items():
+        product = products.get(tid)
+        mats = [m for m in materials.get(tid, []) if m["qty"] > 0]
+        if not product or not mats:
             continue
-        me = best_me[tid]
-        # Capped by whichever required material is scarcest on hand...
+        me = s["me"]
+        for m in mats:
+            used_by[m["material_id"]].append(names.get(tid, "Unknown"))
+        # Capped by the scarcest material on hand, and by the prints' own runs.
         material_runs = min(
-            (_max_runs_for_material(inv.get(m["material_id"], 0), m["qty"], me)
-             for m in mats if m["qty"] > 0),
-            default=0,
+            _max_runs_for_material(inv.get(m["material_id"], 0), m["qty"], me) for m in mats
         )
-        # ...and by the runs remaining on the prints themselves.
-        if tid in has_bpo:
-            runs_available = None  # unlimited
-            max_runs = material_runs
+        print_runs = None if s["bpo"] else s["bpc_runs"]
+        max_runs = material_runs if print_runs is None else min(material_runs, print_runs)
+
+        plan = compute_build_plan(
+            mats, me, 1, inv, prices, product["product_id"], product["qty_per_run"]
+        )
+        short_count = sum(1 for r in plan["rows"] if r["missing"] > 0)
+        if short_count == 0 and max_runs > 0:
+            status = "ready"
+        elif short_count <= 3:
+            status = "short"
         else:
-            runs_available = print_runs.get(tid, 0)
-            max_runs = min(material_runs, runs_available)
-        if max_runs > 0:
-            buildable.append({
-                "name": type_names.get(tid, "Unknown"),
-                "me": me,
-                "runs_available": runs_available,
-                "max_runs": max_runs,
-            })
+            status = "missing"
 
-    buildable.sort(key=lambda x: x["max_runs"], reverse=True)
+        rows.append({
+            "bp_id": tid,
+            "name": names.get(tid, "Unknown"),
+            "product_name": names.get(product["product_id"], "Unknown"),
+            "qty_per_run": product["qty_per_run"],
+            "me": me,
+            "te": s["te"],
+            "bpo": s["bpo"],
+            "bpc": s["bpc"],
+            "print_runs": print_runs,
+            "max_runs": max_runs,
+            "status": status,
+            "short_count": short_count,
+            "profit_per_run": None if plan["missing_prices"] else plan["profit"],
+            "margin": None if plan["missing_prices"] else plan["margin"],
+            "mats": [
+                {
+                    "id": m["material_id"],
+                    "name": names.get(m["material_id"], "Unknown"),
+                    "base": m["qty"],
+                    "have": inv.get(m["material_id"], 0),
+                    "price": avg.get(m["material_id"], 0),
+                }
+                for m in mats
+            ],
+        })
+    rows.sort(key=lambda r: r["profit_per_run"] if r["profit_per_run"] is not None else float("-inf"),
+              reverse=True)
 
-    return render_template("build.html", character=character, buildable=buildable,
-                           all_characters=all_chars, selected_character=sel)
+    # ---- Inventory tab ----
+    _user = get_current_user()
+    limits = {
+        sl.type_id: sl.min_qty
+        for sl in StockLimit.query.filter_by(user_id=_user.id if _user else None).all()
+    }
+    item_info = get_item_categories(inv.keys())
+    inventory = []
+    for type_id, qty in inv.items():
+        info = item_info.get(type_id)
+        if not info:
+            continue
+        users = sorted(set(used_by.get(type_id, [])))
+        inventory.append({
+            "type_id": type_id,
+            "name": info["name"],
+            "category": info["category"],
+            "qty": qty,
+            "value": qty * avg.get(type_id, 0),
+            "limit": limits.get(type_id),
+            "used_by": users[:5],
+            "used_by_more": max(0, len(users) - 5),
+        })
+    inventory.sort(key=lambda i: i["value"], reverse=True)
+
+    # ---- Pinned builds ----
+    # Always operation-wide (every alt), whatever the character filter says:
+    # a capital build draws on all of them. Cached per character, so this is
+    # no extra ESI traffic when the filter is "All".
+    pinned = []
+    projects = _user_projects()
+    if projects:
+        if fetch_chars is all_chars:
+            all_inv, all_summary = inv, summary
+        else:
+            all_inv = _sum_assets(_gather_esi(all_chars, "assets", "assets/", ttl=300))
+            all_summary = _blueprint_summary(
+                _gather_esi(all_chars, "blueprints", "blueprints/", ttl=600))
+        have = dict(all_inv)
+        for tid, qty in _jobs_in_production(all_chars).items():
+            have[tid] = have.get(tid, 0) + qty
+        me_for = {tid: s["me"] for tid, s in all_summary.items()}
+        for p in projects:
+            view = _plan_project(p, me_for, have, prices)
+            if view:
+                pinned.append({"project": p, "name": get_type_name(view["product_id"]), **view})
+
+    return render_template(
+        "industry.html", character=character, rows=rows, inventory=inventory,
+        pinned=pinned, tab=request.args.get("tab", "builds"),
+        all_characters=all_chars, selected_character=sel,
+    )
+
+
+@main.route("/projects/pin", methods=["POST"])
+def pin_project():
+    character = get_character()
+    if not character:
+        return redirect(url_for("main.index"))
+    user = get_current_user()
+    if not user:
+        deny_as_spy("attempted to pin a build with no resolvable user")
+
+    bp_id = request.form.get("bp_id", "")
+    runs = request.form.get("runs", "1")
+    runs = min(max(int(runs), 1), 10_000) if runs.isdigit() else 1
+    # Only real manufacturing prints — the id comes from the browser.
+    if not bp_id.isdigit() or not get_blueprint_products({int(bp_id)}):
+        abort(400)
+    project = BuildProject(
+        user_id=user.id, blueprint_type_id=int(bp_id), runs=runs,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.session.add(project)
+    db.session.commit()
+    return redirect(url_for("main.project_detail", project_id=project.id))
+
+
+@main.route("/projects/<int:project_id>")
+def project_detail(project_id):
+    character = get_character()
+    if not character:
+        return redirect(url_for("main.index"))
+    project = _owned_project(project_id)
+
+    all_chars = owned_characters()
+    inv = _sum_assets(_gather_esi(all_chars, "assets", "assets/", ttl=300))
+    in_jobs = _jobs_in_production(all_chars)
+    have = dict(inv)
+    for tid, qty in in_jobs.items():
+        have[tid] = have.get(tid, 0) + qty
+    summary = _blueprint_summary(_gather_esi(all_chars, "blueprints", "blueprints/", ttl=600))
+    me_for = {tid: s["me"] for tid, s in summary.items()}
+
+    product = get_blueprint_products({project.blueprint_type_id}).get(project.blueprint_type_id)
+    if not product:
+        abort(404)
+
+    # Live Jita prices for what actually gets bought (the raw leaves) plus the
+    # finished ship. Leaves are usually a couple dozen types, so the per-type
+    # order-book fetch stays cheap.
+    recipes = load_recipes(product["product_id"])
+    leaves = expand_build_tree(product["product_id"], project.runs, recipes, me_for, {})["buy"]
+    price_error = None
+    try:
+        prices = get_hub_prices({r["type_id"] for r in leaves} | {product["product_id"]}, "jita")
+    except Exception:
+        prices = {}
+        price_error = "Jita price fetch failed — ESI may be having a moment. Try again shortly."
+
+    view = _plan_project(project, me_for, have, prices)
+    tree = view["tree"]
+    names = get_type_names(
+        {r["type_id"] for r in tree["build"]} | {r["type_id"] for r in tree["buy"]}
+        | {r["bp_id"] for r in tree["build"]}
+    )
+    for r in tree["build"]:
+        r["name"] = names.get(r["type_id"], "Unknown")
+        r["in_jobs"] = min(in_jobs.get(r["type_id"], 0), r["have"])
+        r["in_hangar"] = r["have"] - r["in_jobs"]
+    for r in tree["buy"]:
+        r["name"] = names.get(r["type_id"], "Unknown")
+        r["price"] = (prices.get(r["type_id"]) or {}).get("sell") or 0
+    tree["buy"].sort(key=lambda r: r["missing"] * r["price"], reverse=True)
+
+    return render_template(
+        "project.html", character=character, project=project, view=view,
+        name=get_type_name(view["product_id"]), price_error=price_error,
+        default_me=DEFAULT_COMPONENT_ME,
+    )
+
+
+@main.route("/projects/<int:project_id>/runs", methods=["POST"])
+def project_set_runs(project_id):
+    if not get_character():
+        return redirect(url_for("main.index"))
+    project = _owned_project(project_id)
+    runs = request.form.get("runs", "")
+    if runs.isdigit() and int(runs) > 0:
+        project.runs = min(int(runs), 10_000)
+        db.session.commit()
+    return redirect(url_for("main.project_detail", project_id=project.id))
+
+
+@main.route("/projects/<int:project_id>/delete", methods=["POST"])
+def project_delete(project_id):
+    if not get_character():
+        return redirect(url_for("main.index"))
+    project = _owned_project(project_id)
+    db.session.delete(project)
+    db.session.commit()
+    return redirect(url_for("main.industry"))
 
 
 @main.route("/inventory/limit", methods=["POST"])
@@ -1110,12 +1359,14 @@ def set_stock_limit():
             ))
         db.session.commit()
 
-    # Bounce back to the inventory view (with its filters) the form came from;
-    # only same-site referrers, so this can't redirect off-site.
+    # The Industry page saves limits in the background (fetch) and just needs
+    # an OK; a plain form post gets bounced back to where it came from.
+    if request.headers.get("X-Requested-With") == "fetch":
+        return {"ok": True}
     ref = request.referrer
     if ref and ref.startswith(request.host_url):
         return redirect(ref)
-    return redirect(url_for("main.inventory"))
+    return redirect(url_for("main.industry", tab="inventory"))
 
 
 @main.route("/calculator")

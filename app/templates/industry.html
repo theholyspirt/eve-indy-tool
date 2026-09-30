@@ -1,0 +1,358 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-end gap-2">
+    <h1 class="mb-0">Industry</h1>
+    <form method="GET">
+        <input type="hidden" name="tab" value="{{ tab }}" class="tab-field">
+        <select name="character" class="form-select form-select-sm" onchange="this.form.submit()">
+            <option value="">All characters</option>
+            {% for c in all_characters %}
+            <option value="{{ c.character_id }}"
+                    {% if selected_character == c.character_id|string %}selected{% endif %}>
+                {{ c.character_name }}
+            </option>
+            {% endfor %}
+        </select>
+    </form>
+</div>
+
+{# ---------------- Pinned builds ---------------- #}
+<section id="pinned" class="mt-4">
+    <h2 class="h6 text-muted text-uppercase mb-2">Pinned builds</h2>
+    {% if pinned %}
+    <div class="pin-grid">
+        {% for p in pinned %}
+        <a class="pin-card" href="{{ url_for('main.project_detail', project_id=p.project.id) }}">
+            <div class="d-flex justify-content-between align-items-baseline gap-2">
+                <strong>{{ p.name }}</strong>
+                <span class="small text-muted">× {{ "{:,}".format(p.qty) }}</span>
+            </div>
+            <div class="pin-bar mt-2"><span style="width: {{ '%.0f'|format(p.progress) }}%"></span></div>
+            <div class="d-flex justify-content-between small mt-1">
+                <span>{{ "%.0f"|format(p.progress) }}% covered</span>
+                <span class="text-muted">{{ "{:,.0f}".format(p.missing_cost) }} ISK to buy</span>
+            </div>
+            {% if p.unowned_bps %}
+            <div class="small text-warning mt-1">{{ p.unowned_bps }} component print{{ "s" if p.unowned_bps != 1 }} not owned</div>
+            {% endif %}
+        </a>
+        {% endfor %}
+    </div>
+    <p class="small text-muted mt-2 mb-0">Covered = share of the raw-material bill already in hangars or on the production line (all alts). Average prices here; open a build for live Jita.</p>
+    {% else %}
+    <p class="text-muted small mb-0">Nothing pinned. Open a blueprint below and hit <em>Pin build</em> — ideal for capitals and supers you build over weeks.</p>
+    {% endif %}
+</section>
+
+{# ---------------- Tabs ---------------- #}
+<ul class="nav ind-tabs mt-4" role="tablist">
+    <li><button class="ind-tab" data-tab="builds">Blueprints <span class="text-muted">{{ rows|length }}</span></button></li>
+    <li><button class="ind-tab" data-tab="inventory">Inventory <span class="text-muted">{{ inventory|length }}</span></button></li>
+</ul>
+
+{# ---------------- Builds tab ---------------- #}
+<div class="tab-pane" data-pane="builds">
+    <div class="ind-toolbar mt-3">
+        <input id="search" type="search" class="form-control form-control-sm" placeholder="Search blueprint or product…">
+        <div class="btn-group btn-group-sm" id="filters">
+            <button class="btn btn-outline-secondary active" data-filter="all">All <span class="cnt"></span></button>
+            <button class="btn btn-outline-secondary" data-filter="ready">Ready <span class="cnt"></span></button>
+            <button class="btn btn-outline-secondary" data-filter="short">Short 1–3 <span class="cnt"></span></button>
+            <button class="btn btn-outline-secondary" data-filter="missing">Missing <span class="cnt"></span></button>
+            <button class="btn btn-outline-secondary" data-filter="bpo">BPO</button>
+            <button class="btn btn-outline-secondary" data-filter="bpc">BPC</button>
+        </div>
+    </div>
+    <p class="text-muted small mt-2 mb-0">
+        Profit uses CCP average prices, pre-tax. Click a row for materials, a shopping list and pinning;
+        "Live Jita" opens the calculator with current order-book prices.
+    </p>
+
+    <table class="table table-hover ind-table mt-2">
+        <thead>
+            <tr>
+                <th data-sort="name">Blueprint</th>
+                <th data-sort="me" class="text-end">ME / TE</th>
+                <th data-sort="print_runs" class="text-end">Print runs</th>
+                <th data-sort="status">Status</th>
+                <th data-sort="profit_per_run" class="text-end">Profit / run</th>
+                <th data-sort="margin" class="text-end">Margin</th>
+            </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+    </table>
+    <p id="empty" class="text-muted d-none">No blueprints match.</p>
+</div>
+
+{# ---------------- Inventory tab ---------------- #}
+<div class="tab-pane" data-pane="inventory">
+    <div class="ind-toolbar mt-3">
+        <input id="inv-search" type="search" class="form-control form-control-sm" placeholder="Search items…">
+        <select id="inv-cat" class="form-select form-select-sm w-auto">
+            <option value="">All categories</option>
+        </select>
+        <label class="form-check small mb-0">
+            <input id="inv-low" type="checkbox" class="form-check-input"> Low stock only
+        </label>
+        <label class="form-check small mb-0">
+            <input id="inv-used" type="checkbox" class="form-check-input"> Used by my blueprints
+        </label>
+    </div>
+    <p class="text-muted small mt-2 mb-0">
+        Est. value <strong id="inv-total"></strong> ISK for what's shown (CCP average prices).
+        Low limit saves as you leave the box; quantity turns red below it. Empty or 0 clears it.
+    </p>
+    <table class="table table-sm table-hover ind-table mt-2">
+        <thead>
+            <tr>
+                <th data-isort="name">Item</th>
+                <th data-isort="category">Category</th>
+                <th data-isort="qty" class="text-end">Quantity</th>
+                <th data-isort="value" class="text-end">Est. value</th>
+                <th class="text-end">Low limit</th>
+                <th>Used by</th>
+            </tr>
+        </thead>
+        <tbody id="inv-rows"></tbody>
+    </table>
+    <p id="inv-empty" class="text-muted d-none">No items match.</p>
+</div>
+
+<form id="pin-form" method="POST" action="{{ url_for('main.pin_project') }}" class="d-none">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="bp_id">
+    <input type="hidden" name="runs">
+</form>
+
+<script>
+const ROWS = {{ rows|tojson }};
+const INV = {{ inventory|tojson }};
+const CSRF = "{{ csrf_token() }}";
+const STATUS_ORDER = {ready: 0, short: 1, missing: 2};
+const isk = n => n == null ? "—" : Math.round(n).toLocaleString();
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+
+// EVE's exact material need for N runs at a given ME (same formula as the server).
+const need = (runs, base, me) => Math.max(runs, Math.ceil(runs * base * (100 - me) / 100));
+
+// Generic comparator: nulls last, strings alphabetical, numbers numeric.
+function cmp(x, y, dir) {
+    if (x == null && y == null) return 0;
+    if (x == null) return 1;
+    if (y == null) return -1;
+    return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir;
+}
+
+/* ================= Tabs ================= */
+
+function showTab(name) {
+    document.querySelectorAll(".ind-tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
+    document.querySelectorAll(".tab-pane").forEach(p => p.classList.toggle("d-none", p.dataset.pane !== name));
+    document.querySelectorAll(".tab-field").forEach(f => f.value = name);
+    const url = new URL(location);
+    url.searchParams.set("tab", name);
+    history.replaceState(null, "", url);
+}
+document.querySelectorAll(".ind-tab").forEach(t => t.addEventListener("click", () => showTab(t.dataset.tab)));
+showTab({{ tab|tojson }} === "inventory" ? "inventory" : "builds");
+
+/* ================= Blueprints ================= */
+
+let state = {q: "", filter: "all", sort: "profit_per_run", dir: -1, open: new Set()};
+
+function statusBadge(r) {
+    if (r.status === "ready") return `<span class="st st-ready">Ready · ${r.max_runs} run${r.max_runs === 1 ? "" : "s"}</span>`;
+    if (r.status === "short") return `<span class="st st-short">Short ${r.short_count} item${r.short_count === 1 ? "" : "s"}</span>`;
+    return `<span class="st st-missing">Missing ${r.short_count}</span>`;
+}
+
+function matRows(r) {
+    const runs = r._runs || 1;
+    return r.mats.map(m => {
+        const n = need(runs, m.base, r.me);
+        return {...m, need: n, missing: Math.max(0, n - m.have)};
+    }).sort((a, b) => b.missing * b.price - a.missing * a.price);
+}
+
+function detailHtml(r) {
+    const runs = r._runs || 1;
+    const mats = matRows(r);
+    return `<td colspan="6" class="ind-detail">
+        <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+            <label class="small text-muted">Runs
+                <input type="number" min="1" value="${runs}" class="form-control form-control-sm d-inline-block runs-input" data-bp="${r.bp_id}">
+            </label>
+            <span class="small me-2">Makes <strong>${(r.qty_per_run * runs).toLocaleString()}</strong> × ${esc(r.product_name)}</span>
+            <button class="btn btn-outline-secondary btn-sm copy-btn" data-bp="${r.bp_id}">Copy shopping list</button>
+            <a class="btn btn-outline-secondary btn-sm" href="/calculator?bp=${r.bp_id}&runs=${runs}&hub=jita">Live Jita →</a>
+            <button class="btn btn-primary btn-sm pin-btn" data-bp="${r.bp_id}">Pin build</button>
+        </div>
+        <table class="table table-sm mb-0">
+            <thead><tr><th>Material</th><th class="text-end">Need</th><th class="text-end">Have</th><th class="text-end">Missing</th><th class="text-end">Cost of missing</th></tr></thead>
+            <tbody>${mats.map(m => `<tr>
+                <td>${esc(m.name)}</td>
+                <td class="text-end">${m.need.toLocaleString()}</td>
+                <td class="text-end">${m.have.toLocaleString()}</td>
+                <td class="text-end ${m.missing ? "stock-low" : ""}">${m.missing.toLocaleString()}</td>
+                <td class="text-end">${isk(m.missing * m.price)}</td></tr>`).join("")}
+            </tbody>
+            <tfoot><tr><td colspan="4" class="text-end text-muted">Total to buy</td>
+                <td class="text-end"><strong>${isk(mats.reduce((s, m) => s + m.missing * m.price, 0))}</strong></td></tr></tfoot>
+        </table>
+    </td>`;
+}
+
+function visibleRows() {
+    const q = state.q.toLowerCase();
+    return ROWS.filter(r => {
+        if (q && !r.name.toLowerCase().includes(q) && !r.product_name.toLowerCase().includes(q)) return false;
+        if (state.filter === "bpo") return r.bpo > 0;
+        if (state.filter === "bpc") return r.bpc > 0;
+        return state.filter === "all" || r.status === state.filter;
+    }).sort((a, b) => {
+        let x = a[state.sort], y = b[state.sort];
+        if (state.sort === "status") { x = STATUS_ORDER[x]; y = STATUS_ORDER[y]; }
+        if (state.sort === "print_runs") { x = x ?? Infinity; y = y ?? Infinity; }
+        return cmp(x, y, state.dir);
+    });
+}
+
+function renderRows() {
+    const rows = visibleRows();
+    document.getElementById("rows").innerHTML = rows.map(r => `
+        <tr class="ind-row ${state.open.has(r.bp_id) ? "open" : ""}" data-bp="${r.bp_id}">
+            <td>${esc(r.name)}<div class="small text-muted">${r.bpo ? `${r.bpo} BPO` : ""}${r.bpo && r.bpc ? " · " : ""}${r.bpc ? `${r.bpc} BPC` : ""}</div></td>
+            <td class="text-end">${r.me} / ${r.te}</td>
+            <td class="text-end">${r.print_runs == null ? "∞" : r.print_runs}</td>
+            <td>${statusBadge(r)}</td>
+            <td class="text-end ${r.profit_per_run < 0 ? "stock-low" : ""}">${isk(r.profit_per_run)}</td>
+            <td class="text-end">${r.margin == null ? "—" : r.margin.toFixed(0) + "%"}</td>
+        </tr>
+        ${state.open.has(r.bp_id) ? `<tr class="ind-detail-row">${detailHtml(r)}</tr>` : ""}`).join("");
+    document.getElementById("empty").classList.toggle("d-none", rows.length > 0);
+
+    document.querySelectorAll("#filters [data-filter]").forEach(b => {
+        b.classList.toggle("active", b.dataset.filter === state.filter);
+        const c = b.querySelector(".cnt");
+        if (c) c.textContent = b.dataset.filter === "all" ? ROWS.length : ROWS.filter(r => r.status === b.dataset.filter).length;
+    });
+    document.querySelectorAll("th[data-sort]").forEach(th => {
+        th.dataset.dir = th.dataset.sort === state.sort ? (state.dir > 0 ? "asc" : "desc") : "";
+    });
+}
+
+const byId = id => ROWS.find(r => r.bp_id === Number(id));
+
+document.getElementById("search").addEventListener("input", e => { state.q = e.target.value; renderRows(); });
+document.getElementById("filters").addEventListener("click", e => {
+    const b = e.target.closest("[data-filter]");
+    if (b) { state.filter = b.dataset.filter; renderRows(); }
+});
+document.querySelectorAll("th[data-sort]").forEach(th => th.addEventListener("click", () => {
+    const k = th.dataset.sort;
+    state.dir = state.sort === k ? -state.dir : (k === "name" || k === "status" ? 1 : -1);
+    state.sort = k;
+    renderRows();
+}));
+document.getElementById("rows").addEventListener("click", e => {
+    const copy = e.target.closest(".copy-btn");
+    if (copy) {
+        // Tab-separated "Name<TAB>qty" lines paste straight into EVE's multibuy.
+        const lines = matRows(byId(copy.dataset.bp)).filter(m => m.missing).map(m => `${m.name}\t${m.missing}`);
+        navigator.clipboard.writeText(lines.join("\n"));
+        copy.textContent = lines.length ? "Copied!" : "Nothing to buy";
+        return;
+    }
+    const pin = e.target.closest(".pin-btn");
+    if (pin) {
+        const f = document.getElementById("pin-form");
+        f.bp_id.value = pin.dataset.bp;
+        f.runs.value = byId(pin.dataset.bp)._runs || 1;
+        f.submit();
+        return;
+    }
+    const row = e.target.closest(".ind-row");
+    if (!row) return;
+    const id = Number(row.dataset.bp);
+    state.open.has(id) ? state.open.delete(id) : state.open.add(id);
+    renderRows();
+});
+document.getElementById("rows").addEventListener("change", e => {
+    if (!e.target.classList.contains("runs-input")) return;
+    const r = byId(e.target.dataset.bp);
+    r._runs = Math.max(1, parseInt(e.target.value) || 1);
+    renderRows();
+});
+
+/* ================= Inventory ================= */
+
+let inv = {q: "", cat: "", low: false, used: false, sort: "value", dir: -1};
+const isLow = i => i.limit != null && i.qty < i.limit;
+
+const catSel = document.getElementById("inv-cat");
+[...new Set(INV.map(i => i.category))].sort().forEach(c => catSel.add(new Option(c, c)));
+
+function renderInv() {
+    const q = inv.q.toLowerCase();
+    const items = INV.filter(i =>
+        (!q || i.name.toLowerCase().includes(q)) &&
+        (!inv.cat || i.category === inv.cat) &&
+        (!inv.low || isLow(i)) &&
+        (!inv.used || i.used_by.length)
+    ).sort((a, b) => cmp(a[inv.sort], b[inv.sort], inv.dir));
+
+    document.getElementById("inv-rows").innerHTML = items.map(i => `<tr>
+        <td>${esc(i.name)}</td>
+        <td class="text-muted small">${esc(i.category)}</td>
+        <td class="text-end ${isLow(i) ? "stock-low" : ""}">${i.qty.toLocaleString()}</td>
+        <td class="text-end">${isk(i.value)}</td>
+        <td class="text-end"><input type="number" min="0" placeholder="—" class="form-control form-control-sm limit-input ms-auto"
+            data-type="${i.type_id}" value="${i.limit ?? ""}"></td>
+        <td class="small text-muted">${i.used_by.map(esc).join(", ")}${i.used_by_more ? ` +${i.used_by_more} more` : ""}</td>
+    </tr>`).join("");
+    document.getElementById("inv-empty").classList.toggle("d-none", items.length > 0);
+    document.getElementById("inv-total").textContent = isk(items.reduce((s, i) => s + i.value, 0));
+    document.querySelectorAll("th[data-isort]").forEach(th => {
+        th.dataset.dir = th.dataset.isort === inv.sort ? (inv.dir > 0 ? "asc" : "desc") : "";
+    });
+}
+
+document.getElementById("inv-search").addEventListener("input", e => { inv.q = e.target.value; renderInv(); });
+catSel.addEventListener("change", e => { inv.cat = e.target.value; renderInv(); });
+document.getElementById("inv-low").addEventListener("change", e => { inv.low = e.target.checked; renderInv(); });
+document.getElementById("inv-used").addEventListener("change", e => { inv.used = e.target.checked; renderInv(); });
+document.querySelectorAll("th[data-isort]").forEach(th => th.addEventListener("click", () => {
+    const k = th.dataset.isort;
+    inv.dir = inv.sort === k ? -inv.dir : (k === "name" || k === "category" ? 1 : -1);
+    inv.sort = k;
+    renderInv();
+}));
+
+// Save a low-stock limit in the background — no page reload.
+document.getElementById("inv-rows").addEventListener("change", async e => {
+    const box = e.target.closest(".limit-input");
+    if (!box) return;
+    const body = new FormData();
+    body.append("type_id", box.dataset.type);
+    body.append("min_qty", box.value);
+    box.classList.remove("is-invalid", "is-valid");
+    try {
+        const r = await fetch("{{ url_for('main.set_stock_limit') }}", {
+            method: "POST", body,
+            headers: {"X-CSRFToken": CSRF, "X-Requested-With": "fetch"},
+        });
+        if (!r.ok) throw new Error(r.status);
+        const item = INV.find(i => i.type_id === Number(box.dataset.type));
+        const v = parseInt(box.value);
+        item.limit = v > 0 ? v : null;
+        renderInv();
+    } catch {
+        box.classList.add("is-invalid");
+    }
+});
+
+renderRows();
+renderInv();
+</script>
+{% endblock %}

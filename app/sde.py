@@ -15,6 +15,7 @@ _materials_cache = {}
 _industry_input_cache = {}
 _industry_output_cache = {}
 _products_cache = {}
+_product_bp_cache = {}
 
 
 @lru_cache(maxsize=None)
@@ -145,6 +146,36 @@ def get_blueprint_products(type_ids):
             if tid not in _products_cache:
                 _products_cache[tid] = None
     return {tid: _products_cache[tid] for tid in type_ids if _products_cache.get(tid)}
+
+
+def get_product_blueprints(product_ids):
+    # Reverse of get_blueprint_products: which blueprint MANUFACTURES each
+    # product, {product_id: {"bp_id", "qty_per_run"}}. Used to walk a build
+    # down its component tree — anything with no entry here is bought, not
+    # built (minerals, PI, moon goo, salvage).
+    product_ids = set(product_ids)
+    missing = product_ids - _product_bp_cache.keys()
+    if missing:
+        db = sqlite3.connect(SDE_PATH)
+        placeholders = ",".join("?" * len(missing))
+        rows = db.execute(
+            f"""
+            SELECT productTypeID, typeID, quantity
+            FROM industryActivityProducts
+            WHERE activityID = 1
+            AND productTypeID IN ({placeholders})
+            ORDER BY typeID
+            """,
+            list(missing),
+        ).fetchall()
+        db.close()
+        for product_id, bp_tid, qty in rows:
+            # A handful of products have more than one print; keep the first
+            # (lowest id), which is the standard one.
+            _product_bp_cache.setdefault(product_id, {"bp_id": bp_tid, "qty_per_run": qty})
+        for tid in missing:
+            _product_bp_cache.setdefault(tid, None)
+    return {tid: _product_bp_cache[tid] for tid in product_ids if _product_bp_cache.get(tid)}
 
 
 def search_type_ids(name_fragment, limit=500):

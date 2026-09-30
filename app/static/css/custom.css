@@ -306,6 +306,135 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     display: block;
 }
 
+/* ---------- Industry page ---------- */
+
+.ind-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+}
+
+.ind-toolbar #search {
+    max-width: 22rem;
+}
+
+.btn-group .btn-outline-secondary.active {
+    background-color: var(--accent);
+    border-color: var(--accent);
+    color: #06222c;
+}
+
+.ind-table th[data-sort] {
+    cursor: pointer;
+    user-select: none;
+}
+
+.ind-table th[data-dir="asc"]::after { content: " ▲"; }
+.ind-table th[data-dir="desc"]::after { content: " ▼"; }
+
+.ind-row {
+    cursor: pointer;
+}
+
+.ind-row.open > * {
+    background-color: rgba(62, 207, 255, 0.08) !important;
+}
+
+.ind-detail {
+    background-color: var(--bg-elevated) !important;
+    padding: 1rem !important;
+}
+
+.ind-detail .table {
+    --bs-table-bg: var(--bg-elevated);
+}
+
+.runs-input {
+    width: 6rem;
+}
+
+/* Tabs */
+.ind-tabs {
+    gap: 0.25rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.ind-tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    padding: 0.5rem 1rem;
+    font-weight: 500;
+    margin-bottom: -1px;
+}
+
+.ind-tab:hover { color: var(--text); }
+
+.ind-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
+/* Pinned builds */
+.pin-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+    gap: 0.75rem;
+}
+
+.pin-card {
+    display: block;
+    padding: 0.8rem 1rem;
+    background-color: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    text-decoration: none;
+    transition: border-color 0.15s ease;
+}
+
+.pin-card:hover {
+    border-color: var(--accent-dim);
+    color: var(--text);
+}
+
+.pin-bar {
+    height: 6px;
+    border-radius: 3px;
+    background-color: var(--bg-elevated);
+    overflow: hidden;
+}
+
+.pin-bar-lg { height: 10px; border-radius: 5px; }
+
+.pin-bar > span {
+    display: block;
+    height: 100%;
+    background-color: var(--success);
+}
+
+.tier-row > td {
+    color: var(--text-muted) !important;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding-top: 0.8rem !important;
+}
+
+.st {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.st-ready   { color: var(--success); background-color: rgba(53, 212, 138, 0.12); }
+.st-short   { color: var(--warning); background-color: rgba(255, 180, 84, 0.12); }
+.st-missing { color: var(--text-muted); background-color: rgba(139, 152, 168, 0.12); }
+
 /* ---------- Misc ---------- */
 
 a {

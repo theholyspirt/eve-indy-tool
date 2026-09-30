@@ -90,6 +90,18 @@ class StockLimit(db.Model):
     __table_args__ = (db.UniqueConstraint("user_id", "type_id"),)
 
 
+class BuildProject(db.Model):
+    # A pinned long build (capitals, supers) on the Industry page. Stores only
+    # WHAT to build — the component tree, what's on hand and what's missing are
+    # recomputed on every view from the SDE and live assets/jobs, so progress
+    # tracks itself as components get built. Per user, like StockLimit.
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    blueprint_type_id = db.Column(db.Integer, nullable=False)
+    runs = db.Column(db.Integer, nullable=False, default=1)
+    created_at = db.Column(db.DateTime, nullable=False)
+
+
 class AccessAttempt(db.Model):
     # Audit trail of blocked access — someone trying to reach data that isn't
     # theirs. In a corp context this is the genuinely useful half of the
